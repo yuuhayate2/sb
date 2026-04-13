@@ -26,7 +26,7 @@ from turnstile_solver import solve_turnstile_capsolver
 from proxy_util import load_proxies, get_random_proxy, proxy_display
 
 load_dotenv()
-SUPABASE_URL = "https://ukwltgxtfikrpsqfihi.supabase.co"
+SUPABASE_URL = "https://ukwltgxtfikiprsqflhi.supabase.co"
 SUPABASE_KEY = "sb_publishable_NhI5Z-LriMN_huWOV14AtA_YtmDZeQ3"
 
 license_valid = False
