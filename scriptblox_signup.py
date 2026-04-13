@@ -304,7 +304,7 @@ def get_proxies():
 @app.route("/get-webhook", methods=["GET"])
 def get_webhook():
     if not license_valid: return jsonify({"ok": False})
-    return jsonify({"ok": True, "webhook": active_webhook})
+    return jsonify({"ok": True, "has_webhook": bool(active_webhook)})
 
 # ── SocketIO ──────────────────────────────────────────────────────────────────
 @socketio.on("get_info")
@@ -858,11 +858,14 @@ async function loadSavedConfig() {
       badge.className = 'badge' + (d.count > 0 ? ' ok' : '');
     }
   } catch {}
-  // Load webhook
+  // Load webhook status only - never show actual URL
   try {
     const r = await fetch('/get-webhook');
     const d = await r.json();
-    if (d.ok && d.webhook) document.getElementById('webhookInput').value = d.webhook;
+    if (d.ok && d.has_webhook) {
+      const st = document.getElementById('webhookSt');
+      if (st) { st.style.color='var(--green)'; st.textContent='webhook set ✓'; }
+    }
   } catch {}
 }
 
