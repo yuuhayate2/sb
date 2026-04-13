@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
-
 import requests
 import urllib3
 urllib3.disable_warnings()
@@ -165,18 +164,16 @@ def create_account(slot):
     proxy     = get_random_proxy(proxies_list)
     proxy_req = proxy_to_requests(proxy)
 
-    # Get email + solve captcha
     cookies, csrf = mw_setup()
     captcha = solve_turnstile_capsolver()
-
     email_addr, _ = mw_get_email(cookies, csrf)
 
     if not email_addr or not captcha:
         state["failed"] += 1
-        log_emit(f"[#{slot}] ✗ Setup failed", "err")
+        log_emit(f"[#{slot}] Setup failed", "err")
         return
 
-    log_emit(f"[#{slot}] {email_addr} | Captcha ✓", "dim")
+    log_emit(f"[#{slot}] {email_addr} | Captcha OK", "dim")
 
     try:
         r = requests.post(SB_SIGNUP, json={
@@ -187,12 +184,12 @@ def create_account(slot):
         resp = r.json()
     except Exception as e:
         state["failed"] += 1
-        log_emit(f"[#{slot}] ✗ Request error", "err")
+        log_emit(f"[#{slot}] Request error", "err")
         return
 
     if resp.get("error") or (isinstance(resp.get("statusCode"), int) and resp["statusCode"] >= 400):
         state["failed"] += 1
-        log_emit(f"[#{slot}] ✗ Signup failed: {resp.get('message','')}", "err")
+        log_emit(f"[#{slot}] Signup failed: {resp.get('message','')}", "err")
         return
 
     account = {"username": username, "password": password, "email": email_addr}
@@ -202,7 +199,7 @@ def create_account(slot):
 
     send_webhook(username, password, email_addr)
     state["created"] += 1
-    log_emit(f"[#{slot}] ✓ {username}", "ok")
+    log_emit(f"[#{slot}] {username}", "ok")
 
 
 def run_generator(count, concurrent):
@@ -226,22 +223,22 @@ def run_generator(count, concurrent):
         t.join()
 
     state["running"] = False
-    log_emit(f"✓ Done! {state['created']}/{count} accounts created.", "ok")
+    log_emit(f"Done! {state['created']}/{count} accounts created.", "ok")
     socketio.emit("done", {"created": state["created"], "total": count})
+
+
+# ── License Verify Route ──────────────────────────────────────────────────────
+
 @app.route("/verify-key", methods=["POST"])
 def verify():
-
     global license_valid, current_key
-
     try:
         data = request.json
         key = data.get("key")
-
         if not key:
             return jsonify({"valid": False})
 
         hwid = get_hwid(request.remote_addr)
-
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -251,39 +248,30 @@ def verify():
         res = requests.get(
             f"{SUPABASE_URL}/rest/v1/licenses",
             headers=headers,
-            params={
-                "license_key": f"eq.{key}",
-                "select": "*"
-            }
+            params={"license_key": f"eq.{key}", "select": "*"}
         )
 
         if res.status_code != 200:
-            print("Supabase error:", res.text)
             return jsonify({"valid": False})
 
         result = res.json()
-
         if not result:
             return jsonify({"valid": False})
 
         license = result[0]
 
-        # Check status
         if license.get("status") != "active":
             return jsonify({"valid": False})
 
-        # Check expiry
         expiry_date = license.get("expiry_date")
         if expiry_date:
             expiry = datetime.fromisoformat(expiry_date.replace("Z", ""))
             if datetime.now() > expiry:
                 return jsonify({"valid": False})
 
-        # Check HWID
         if license.get("hwid") and license["hwid"] != hwid:
             return jsonify({"valid": False})
 
-        # Bind HWID
         if not license.get("hwid"):
             requests.patch(
                 f"{SUPABASE_URL}/rest/v1/licenses",
@@ -294,7 +282,6 @@ def verify():
 
         license_valid = True
         current_key = key
-
         return jsonify({"valid": True})
 
     except Exception as e:
@@ -305,86 +292,454 @@ def verify():
 # ── HTML ──────────────────────────────────────────────────────────────────────
 
 HTML = """<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KUNI · AUTO SB GEN</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap');
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#080c10;color:#c8d8e8;font-family:'IBM Plex Mono',monospace;min-height:100vh;padding:20px}
-.container{max-width:480px;margin:0 auto}
-.header{display:flex;align-items:baseline;gap:10px;padding:16px 0;border-bottom:1px solid #3a4a5a}
-.header h1{font-size:28px;color:#00e5ff;font-weight:700;letter-spacing:2px}
-.header span{color:#3a4a5a;font-size:11px}
-.version{margin-left:auto;color:#3a4a5a;font-size:11px}
-.status{color:#ffd700;font-size:11px;padding:10px 0}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:12px 0}
-.stat{background:#111820;padding:12px 8px;text-align:center;border-radius:4px}
-.stat-val{font-size:22px;font-weight:700;display:block}
-.stat-lbl{font-size:9px;color:#3a4a5a;margin-top:4px;display:block;letter-spacing:1px}
-.created{color:#00ff88}.active{color:#00e5ff}.failed{color:#ff3355}.target{color:#ffd700}
-.config{display:flex;align-items:center;gap:12px;padding:12px 0;flex-wrap:wrap}
-.config label{color:#3a4a5a;font-size:11px;letter-spacing:1px}
-.config input{background:#111820;border:none;color:#00e5ff;font-family:'IBM Plex Mono',monospace;font-size:13px;padding:6px 10px;width:70px;outline:none;border-radius:3px}
-.proxy-info{color:#3a4a5a;font-size:10px;text-align:right;padding-bottom:8px}
-.btn{width:100%;padding:14px;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:700;cursor:pointer;border:none;border-radius:4px;letter-spacing:3px;transition:all .2s}
-.btn-idle{background:#111820;color:#00e5ff;border:1px solid #00e5ff}
-.btn-idle:hover{background:#00e5ff;color:#080c10}
-.btn-stop{background:#1a0008;color:#ff3355;border:1px solid #ff3355}
-.log-header{color:#3a4a5a;font-size:10px;padding:12px 0 4px;letter-spacing:2px}
-.log-box{background:#0d1117;padding:10px;height:240px;overflow-y:auto;font-size:11px;line-height:1.7;border-radius:4px}
-.log-box::-webkit-scrollbar{width:3px}
-.log-box::-webkit-scrollbar-thumb{background:#3a4a5a}
-.ok{color:#00ff88}.err{color:#ff3355}.dim{color:#3a4a5a}.inf{color:#00e5ff}
-.footer{border-top:1px solid #3a4a5a;padding:10px 0;color:#3a4a5a;font-size:10px;display:flex;justify-content:space-between;margin-top:8px}
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
-/* License screen */
-.license-screen{display:flex;align-items:center;justify-content:center;height:100vh;background:#080c10}
-.license-box{text-align:center}
-.license-title{font-size:32px;color:#00e5ff;font-weight:700;letter-spacing:4px;margin-bottom:6px}
-.license-sub{color:#3a4a5a;font-size:11px;letter-spacing:2px;margin-bottom:32px}
-.license-input{display:block;width:300px;padding:12px 16px;background:#111820;border:1px solid #1e2e3e;color:#00e5ff;font-family:'IBM Plex Mono',monospace;font-size:13px;outline:none;border-radius:4px;margin:0 auto 12px;letter-spacing:2px;transition:border-color .2s}
-.license-input:focus{border-color:#00e5ff}
-.license-input::placeholder{color:#2a3a4a;letter-spacing:1px}
-.license-btn{display:block;width:300px;margin:0 auto;padding:12px;background:#00e5ff;border:none;color:#080c10;font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:12px;letter-spacing:3px;cursor:pointer;border-radius:4px;transition:all .2s}
-.license-btn:hover{background:transparent;color:#00e5ff;border:1px solid #00e5ff}
-.license-err{color:#ff3355;font-size:11px;margin-top:10px;min-height:16px}
-.license-divider{width:300px;margin:24px auto;border:none;border-top:1px solid #1e2e3e}
-.license-footer{color:#3a4a5a;font-size:10px;letter-spacing:1px}
+  :root {
+    --bg:       #080b0f;
+    --surface:  #0e1318;
+    --surface2: #141c24;
+    --border:   #1c2a38;
+    --border2:  #253545;
+    --cyan:     #00d4ff;
+    --cyan-dim: rgba(0,212,255,0.08);
+    --cyan-glow:rgba(0,212,255,0.18);
+    --green:    #00e87a;
+    --red:      #ff3b5c;
+    --gold:     #f5c842;
+    --text:     #c5d8ea;
+    --muted:    #4a6070;
+    --muted2:   #2a3a4a;
+    --mono:     'Space Mono', monospace;
+    --sans:     'Syne', sans-serif;
+    --radius:   10px;
+    --radius-lg:16px;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--mono); }
+
+  /* ── scrollbar ── */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+  /* ══════════════════════════════════════════
+     LICENSE SCREEN
+  ══════════════════════════════════════════ */
+  .lic-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(ellipse 60% 40% at 50% 0%, rgba(0,212,255,0.06) 0%, transparent 70%),
+      var(--bg);
+  }
+
+  .lic-card {
+    width: 100%;
+    max-width: 400px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 40px 36px 32px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .lic-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  }
+
+  .lic-logo {
+    font-family: var(--sans);
+    font-size: 36px;
+    font-weight: 800;
+    color: var(--cyan);
+    letter-spacing: 6px;
+    margin-bottom: 4px;
+  }
+
+  .lic-sub {
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: var(--muted);
+    margin-bottom: 36px;
+    text-transform: uppercase;
+  }
+
+  .lic-label {
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    display: block;
+  }
+
+  .lic-input {
+    width: 100%;
+    padding: 13px 16px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 2px;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    margin-bottom: 12px;
+  }
+
+  .lic-input:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 3px var(--cyan-dim);
+  }
+
+  .lic-input::placeholder { color: var(--muted2); letter-spacing: 1px; }
+
+  .lic-btn {
+    width: 100%;
+    padding: 13px;
+    background: var(--cyan);
+    border: none;
+    border-radius: var(--radius);
+    color: var(--bg);
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .lic-btn:hover { background: #33dbff; transform: translateY(-1px); box-shadow: 0 8px 24px var(--cyan-glow); }
+  .lic-btn:active { transform: translateY(0); }
+  .lic-btn.loading { opacity: 0.7; pointer-events: none; }
+
+  .lic-err {
+    font-size: 11px;
+    min-height: 18px;
+    margin-top: 10px;
+    text-align: center;
+    letter-spacing: 0.5px;
+    color: var(--red);
+    transition: color 0.2s;
+  }
+
+  .lic-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 28px 0 20px;
+  }
+
+  .lic-footer {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 1px;
+  }
+
+  .lic-dot {
+    width: 6px; height: 6px;
+    background: var(--muted2);
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+    vertical-align: middle;
+    transition: background 0.3s;
+  }
+  .lic-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse-dot 1.4s infinite; }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ══════════════════════════════════════════
+     MAIN APP
+  ══════════════════════════════════════════ */
+  .app {
+    min-height: 100vh;
+    max-width: 540px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* header */
+  .hdr {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 0 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hdr-logo {
+    font-family: var(--sans);
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--cyan);
+    letter-spacing: 4px;
+  }
+  .hdr-sub { font-size: 10px; color: var(--muted); letter-spacing: 2px; }
+  .hdr-ver { margin-left: auto; font-size: 10px; color: var(--muted2); background: var(--surface2); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); }
+
+  /* status bar */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--muted);
+    padding: 6px 0;
+  }
+  .status-bar .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--muted2); flex-shrink: 0;
+  }
+  .status-bar.idle .dot   { background: var(--muted); }
+  .status-bar.running .dot { background: var(--gold); box-shadow: 0 0 6px var(--gold); animation: pulse-dot 1s infinite; }
+  .status-bar.done .dot   { background: var(--green); }
+  .status-bar.stopped .dot { background: var(--red); }
+  .status-text { color: var(--text); }
+
+  /* stats grid */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 8px 10px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .stat::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 2px;
+    border-radius: 0 0 var(--radius) var(--radius);
+    opacity: 0.6;
+  }
+  .stat.s-created::after { background: var(--green); }
+  .stat.s-active::after  { background: var(--cyan); }
+  .stat.s-failed::after  { background: var(--red); }
+  .stat.s-target::after  { background: var(--gold); }
+
+  .stat-val { font-family: var(--sans); font-size: 26px; font-weight: 800; display: block; line-height: 1; }
+  .stat-lbl { font-size: 8px; color: var(--muted); letter-spacing: 2px; margin-top: 5px; display: block; }
+  .s-created .stat-val { color: var(--green); }
+  .s-active  .stat-val { color: var(--cyan); }
+  .s-failed  .stat-val { color: var(--red); }
+  .s-target  .stat-val { color: var(--gold); }
+
+  /* config row */
+  .config-row {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .config-field { display: flex; align-items: center; gap: 10px; }
+  .config-label { font-size: 10px; letter-spacing: 2px; color: var(--muted); white-space: nowrap; }
+  .config-input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 6px 10px;
+    width: 72px;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .config-input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px var(--cyan-dim); }
+  .proxy-badge {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 3px 10px;
+    white-space: nowrap;
+  }
+
+  /* run button */
+  .run-btn {
+    width: 100%;
+    padding: 15px;
+    border: none;
+    border-radius: var(--radius);
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+  .run-btn.idle {
+    background: transparent;
+    border: 1px solid var(--cyan);
+    color: var(--cyan);
+  }
+  .run-btn.idle:hover {
+    background: var(--cyan);
+    color: var(--bg);
+    box-shadow: 0 6px 24px var(--cyan-glow);
+    transform: translateY(-1px);
+  }
+  .run-btn.stop {
+    background: transparent;
+    border: 1px solid var(--red);
+    color: var(--red);
+  }
+  .run-btn.stop:hover { background: rgba(255,59,92,0.08); }
+  .run-btn:active { transform: scale(0.99); }
+
+  /* log */
+  .log-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    flex: 1;
+  }
+  .log-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--muted);
+  }
+  .log-clear {
+    font-size: 10px;
+    color: var(--muted2);
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: var(--mono);
+    letter-spacing: 1px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: color 0.2s, background 0.2s;
+  }
+  .log-clear:hover { color: var(--text); background: var(--surface2); }
+  .log-box {
+    padding: 10px 14px;
+    height: 220px;
+    overflow-y: auto;
+    font-size: 11px;
+    line-height: 1.8;
+  }
+  .log-line { display: flex; gap: 8px; }
+  .log-ts { color: var(--muted2); flex-shrink: 0; }
+  .ok  .log-msg { color: var(--green); }
+  .err .log-msg { color: var(--red); }
+  .dim .log-msg { color: var(--muted); }
+  .inf .log-msg { color: var(--cyan); }
+
+  /* footer */
+  .footer {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--muted2);
+    padding-top: 4px;
+    letter-spacing: 1px;
+  }
+
+  /* ── mobile ── */
+  @media (max-width: 480px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .config-row { gap: 12px; }
+    .proxy-badge { margin-left: 0; width: 100%; text-align: center; }
+    .lic-card { padding: 32px 20px 24px; }
+    .stat-val { font-size: 22px; }
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .animate-in { animation: fadeIn 0.3s ease forwards; }
 </style>
 </head>
 <body>
 <div id="app"></div>
 
 <script>
+// ── License Screen ──────────────────────────────────────────────────────────
 function showLicenseScreen() {
   document.getElementById('app').innerHTML = `
-    <div class="license-screen">
-      <div class="license-box">
-        <div class="license-title">KUNI</div>
-        <div class="license-sub">LICENSE VERIFICATION &nbsp;·&nbsp; AUTO SB GEN v2.3</div>
-        <input class="license-input" id="licenseInput" type="text" placeholder="ENTER LICENSE KEY" autocomplete="off" />
-        <button class="license-btn" onclick="doLogin()">LOGIN</button>
-        <div class="license-err" id="licenseErr"></div>
-        <hr class="license-divider" />
-        <div class="license-footer">by kuni &nbsp;·&nbsp; unauthorized access prohibited</div>
+    <div class="lic-wrap animate-in">
+      <div class="lic-card">
+        <div class="lic-logo">KUNI</div>
+        <div class="lic-sub">Auto SB Gen &nbsp;·&nbsp; v2.3</div>
+        <span class="lic-label">LICENSE KEY</span>
+        <input class="lic-input" id="licInput" type="text" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" />
+        <button class="lic-btn" id="licBtn" onclick="doLogin()">Verify License</button>
+        <div class="lic-err" id="licErr"></div>
+        <hr class="lic-divider" />
+        <div class="lic-footer">
+          <span><span class="lic-dot" id="connDot"></span>kuni tool</span>
+          <span>unauthorized access prohibited</span>
+        </div>
       </div>
     </div>
   `;
-  document.getElementById('licenseInput').addEventListener('keydown', e => {
+  document.getElementById('licInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') doLogin();
   });
 }
 
 async function doLogin() {
-  const key = document.getElementById('licenseInput').value.trim();
-  const err = document.getElementById('licenseErr');
-  if (!key) { err.textContent = '⚠ please enter a license key'; return; }
-  err.style.color = '#ffd700';
-  err.textContent = '● verifying...';
+  const key = document.getElementById('licInput').value.trim();
+  const err = document.getElementById('licErr');
+  const btn = document.getElementById('licBtn');
+  const dot = document.getElementById('connDot');
+  if (!key) { err.style.color = '#f5c842'; err.textContent = 'please enter a license key'; return; }
+  btn.classList.add('loading');
+  btn.textContent = 'Verifying...';
+  err.style.color = '#4a6070';
+  err.textContent = 'connecting to license server...';
+  if (dot) { dot.classList.add('active'); }
   try {
     const res = await fetch('/verify-key', {
       method: 'POST',
@@ -394,49 +749,87 @@ async function doLogin() {
     const data = await res.json();
     if (data.valid) {
       localStorage.setItem('license', key);
-      showMainApp();
+      err.style.color = '#00e87a';
+      err.textContent = 'license valid — loading...';
+      setTimeout(showMainApp, 600);
     } else {
-      err.style.color = '#ff3355';
-      err.textContent = '✕ invalid license — contact your reseller';
+      btn.classList.remove('loading');
+      btn.textContent = 'Verify License';
+      err.style.color = '#ff3b5c';
+      err.textContent = 'invalid license — contact your reseller';
+      if (dot) dot.classList.remove('active');
     }
   } catch (e) {
-    err.style.color = '#ff3355';
-    err.textContent = '✕ server error — try again';
+    btn.classList.remove('loading');
+    btn.textContent = 'Verify License';
+    err.style.color = '#ff3b5c';
+    err.textContent = 'server error — try again';
+    if (dot) dot.classList.remove('active');
   }
 }
 
+// ── Main App ────────────────────────────────────────────────────────────────
 function showMainApp() {
   document.getElementById('app').innerHTML = `
-    <div class="container">
-      <div class="header">
-        <h1>KUNI</h1>
-        <span>AUTO SB GEN</span>
-        <span class="version">v2.3</span>
+    <div class="app animate-in">
+      <div class="hdr">
+        <div class="hdr-logo">KUNI</div>
+        <div class="hdr-sub">AUTO SB GEN</div>
+        <div class="hdr-ver">v2.3</div>
       </div>
-      <div class="status" id="status">● idle — ready</div>
+
+      <div class="status-bar idle" id="statusBar">
+        <span class="dot"></span>
+        <span class="status-text" id="statusText">idle — ready</span>
+      </div>
+
       <div class="stats">
-        <div class="stat"><span class="stat-val created" id="s-created">0</span><span class="stat-lbl">CREATED</span></div>
-        <div class="stat"><span class="stat-val active" id="s-active">0</span><span class="stat-lbl">ACTIVE</span></div>
-        <div class="stat"><span class="stat-val failed" id="s-failed">0</span><span class="stat-lbl">FAILED</span></div>
-        <div class="stat"><span class="stat-val target" id="s-target">0</span><span class="stat-lbl">TARGET</span></div>
+        <div class="stat s-created"><span class="stat-val" id="s-created">0</span><span class="stat-lbl">CREATED</span></div>
+        <div class="stat s-active"><span class="stat-val" id="s-active">0</span><span class="stat-lbl">ACTIVE</span></div>
+        <div class="stat s-failed"><span class="stat-val" id="s-failed">0</span><span class="stat-lbl">FAILED</span></div>
+        <div class="stat s-target"><span class="stat-val" id="s-target">0</span><span class="stat-lbl">TARGET</span></div>
       </div>
-      <div class="config">
-        <label>COUNT</label>
-        <input type="number" id="count" value="10" min="1" max="9999">
-        <label>CONCURRENT</label>
-        <input type="number" id="concurrent" value="10" min="1" max="50">
+
+      <div class="config-row">
+        <div class="config-field">
+          <span class="config-label">COUNT</span>
+          <input class="config-input" type="number" id="count" value="10" min="1" max="9999">
+        </div>
+        <div class="config-field">
+          <span class="config-label">CONCURRENT</span>
+          <input class="config-input" type="number" id="concurrent" value="10" min="1" max="50">
+        </div>
+        <div class="proxy-badge" id="proxyBadge">loading proxies...</div>
       </div>
-      <div class="proxy-info" id="proxy-info">loading proxies...</div>
-      <button class="btn btn-idle" id="mainBtn" onclick="toggle()">RUN GENERATOR</button>
-      <div class="log-header">LOG</div>
-      <div class="log-box" id="logBox"></div>
+
+      <button class="run-btn idle" id="mainBtn" onclick="toggle()">Run Generator</button>
+
+      <div class="log-wrap">
+        <div class="log-header">
+          <span>LOG OUTPUT</span>
+          <button class="log-clear" onclick="clearLog()">clear</button>
+        </div>
+        <div class="log-box" id="logBox"></div>
+      </div>
+
       <div class="footer">
         <span>by kuni</span>
-        <span id="footer-status">idle</span>
+        <span id="footerStatus">idle</span>
       </div>
     </div>
   `;
   initSocket();
+}
+
+function clearLog() {
+  document.getElementById('logBox').innerHTML = '';
+}
+
+function setStatus(mode, text) {
+  const bar = document.getElementById('statusBar');
+  bar.className = 'status-bar ' + mode;
+  document.getElementById('statusText').textContent = text;
+  document.getElementById('footerStatus').textContent = mode;
 }
 
 function initSocket() {
@@ -456,51 +849,57 @@ function initSocket() {
   socket.on('connect', () => socket.emit('get_info'));
 
   socket.on('info', d => {
-    document.getElementById('proxy-info').textContent = `proxy ready — ${d.proxies} loaded`;
+    document.getElementById('proxyBadge').textContent = d.proxies + ' proxies loaded';
   });
 
   socket.on('log', d => {
     const box = document.getElementById('logBox');
     const line = document.createElement('div');
-    line.className = d.tag || 'dim';
-    line.textContent = d.msg;
+    line.className = 'log-line ' + (d.tag || 'dim');
+    const msg = d.msg || '';
+    const tsMatch = msg.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)/s);
+    if (tsMatch) {
+      line.innerHTML = `<span class="log-ts">${tsMatch[1]}</span><span class="log-msg">${tsMatch[2]}</span>`;
+    } else {
+      line.innerHTML = `<span class="log-msg">${msg}</span>`;
+    }
     box.appendChild(line);
     box.scrollTop = box.scrollHeight;
   });
 
   socket.on('stats', d => {
     document.getElementById('s-created').textContent = d.created;
-    document.getElementById('s-active').textContent = d.active;
-    document.getElementById('s-failed').textContent = d.failed;
-    document.getElementById('s-target').textContent = d.target;
+    document.getElementById('s-active').textContent  = d.active;
+    document.getElementById('s-failed').textContent  = d.failed;
+    document.getElementById('s-target').textContent  = d.target;
   });
 
   socket.on('started', d => {
     running = true;
-    document.getElementById('mainBtn').className = 'btn btn-stop';
-    document.getElementById('mainBtn').textContent = '■  STOP';
-    document.getElementById('status').textContent = `● running — ${d.count} accounts`;
-    document.getElementById('footer-status').textContent = 'running';
+    const btn = document.getElementById('mainBtn');
+    btn.className = 'run-btn stop';
+    btn.textContent = '■  Stop';
+    setStatus('running', 'running — ' + d.count + ' accounts');
   });
 
   socket.on('stopped', () => {
     running = false;
-    document.getElementById('mainBtn').className = 'btn btn-idle';
-    document.getElementById('mainBtn').textContent = 'RUN GENERATOR';
-    document.getElementById('status').textContent = '● stopped';
-    document.getElementById('footer-status').textContent = 'idle';
+    const btn = document.getElementById('mainBtn');
+    btn.className = 'run-btn idle';
+    btn.textContent = 'Run Generator';
+    setStatus('stopped', 'stopped');
   });
 
   socket.on('done', d => {
     running = false;
-    document.getElementById('mainBtn').className = 'btn btn-idle';
-    document.getElementById('mainBtn').textContent = 'RUN GENERATOR';
-    document.getElementById('status').textContent = `● done — ${d.created}/${d.total} created`;
-    document.getElementById('footer-status').textContent = 'done';
+    const btn = document.getElementById('mainBtn');
+    btn.className = 'run-btn idle';
+    btn.textContent = 'Run Generator';
+    setStatus('done', 'done — ' + d.created + '/' + d.total + ' created');
   });
 }
 
-// Init
+// ── Init ────────────────────────────────────────────────────────────────────
 if (localStorage.getItem('license')) {
   showMainApp();
 } else {
@@ -525,7 +924,6 @@ def on_info():
 
 @socketio.on("start")
 def on_start(data):
-
     if not license_valid:
         return
     if state["running"]:
