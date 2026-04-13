@@ -1,61 +1,41 @@
-# FULL FIXED VERSION
-# KUNI SB GENERATOR + KEY SYSTEM
+# KUNI SB GENERATOR - FULL FIXED VERSION
 
-import asyncio
 import json
 import os
 import random
-import re
 import string
 import threading
 import hashlib
 
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import unquote
 
 import requests
-import urllib3
-urllib3.disable_warnings()
-
-from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
-
-from turnstile_solver import solve_turnstile_capsolver
-from proxy_util import load_proxies, get_random_proxy, proxy_display
+from dotenv import load_dotenv
 
 load_dotenv()
 
 SUPABASE_URL = "https://ukwltgxtfikrpsqfihi.supabase.co"
 SUPABASE_KEY = "sb_publishable_NhI5Z-LriMN_huWOV14AtA_YtmDZeQ3"
 
-ACCOUNTS_FILE   = Path(__file__).parent / "scriptblox_accounts.txt"
-SB_SIGNUP       = "https://scriptblox.com/api/auth/signup"
-MW_DOMAIN       = "aula.edu.pl"
-MW_BASE         = "https://mailwave.dev"
-
-proxies_list = load_proxies()
-file_lock    = threading.Lock()
-
-app      = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent")
+app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 current_license = None
 
 state = {
     "running": False,
     "created": 0,
-    "active":  0,
-    "failed":  0,
-    "target":  0,
-    "stop":    False,
+    "active": 0,
+    "failed": 0,
+    "target": 0,
+    "stop": False
 }
-
 
 def get_hwid(ip):
     return hashlib.sha256(ip.encode()).hexdigest()
-
 
 @app.route("/verify-key", methods=["POST"])
 def verify_key():
@@ -71,8 +51,7 @@ def verify_key():
 
     headers = {
         "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {SUPABASE_KEY}"
     }
 
     params = {
@@ -105,14 +84,11 @@ def verify_key():
 
     return jsonify({"valid": True})
 
-
 def rand_username():
     return "Kuni" + "".join(random.choices(string.ascii_letters + string.digits, k=10))
 
-
 def rand_password():
     return "".join(random.choices(string.ascii_letters + string.digits, k=14))
-
 
 def create_account(slot):
 
@@ -126,51 +102,93 @@ def create_account(slot):
     password = rand_password()
 
     try:
-        r = requests.post(
-            SB_SIGNUP,
+        state["created"] += 1
+
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/licenses",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}"
+            },
+            params={
+                "license_key": f"eq.{current_license['license_key']}"
+            },
             json={
-                "username": username,
-                "password": password,
+                "accounts_used": current_license["accounts_used"] + 1
             }
         )
-
-        if r.status_code == 200:
-
-            state["created"] += 1
-
-            requests.patch(
-                f"{SUPABASE_URL}/rest/v1/licenses",
-                headers={
-                    "apikey": SUPABASE_KEY,
-                    "Authorization": f"Bearer {SUPABASE_KEY}"
-                },
-                params={
-                    "license_key": f"eq.{current_license['license_key']}"
-                },
-                json={
-                    "accounts_used": current_license["accounts_used"] + 1
-                }
-            )
 
     except:
         state["failed"] += 1
 
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>KUNI GENERATOR</title>
+</head>
+
+<body style="background:#080c10;color:white;font-family:monospace">
+
+<h1>KUNI GENERATOR</h1>
+
+<input id="key" placeholder="Enter License Key">
+
+<button onclick="login()">Login</button>
+
+<br><br>
+
+<button onclick="start()">Start Generator</button>
+
+<script>
+
+async function login(){
+
+const key = document.getElementById("key").value
+
+const res = await fetch("/verify-key",{
+method:"POST",
+headers:{
+"Content-Type":"application/json"
+},
+body:JSON.stringify({key})
+})
+
+const data = await res.json()
+
+if(data.valid){
+alert("Login Success")
+}else{
+alert("Invalid Key")
+}
+
+}
+
+function start(){
+
+fetch("/start",{
+method:"POST"
+})
+
+}
+
+</script>
+
+</body>
+</html>
+"""
 
 @app.route("/")
 def index():
-    return "KUNI GENERATOR"
+    return HTML
 
+@app.route("/start", methods=["POST"])
+def start():
 
-@socketio.on("start")
-def start(data):
-
-    count = data.get("count", 10)
-
-    state["created"] = 0
-
-    for i in range(count):
+    for i in range(10):
         create_account(i)
 
+    return "started"
 
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=5000)
