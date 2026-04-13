@@ -607,20 +607,20 @@ function showLicenseScreen() {
             <div class="price-card">
               <div class="price-name">BASIC</div>
               <div class="price-limit">100 accounts</div>
-              <div class="price-amt">₱XX</div>
-              <div class="price-dur">30 days</div>
+              <div class="price-amt">$79.99</div>
+              <div class="price-dur">100 Limit</div>
             </div>
             <div class="price-card featured">
               <div class="price-name">PRO</div>
               <div class="price-limit">500 accounts</div>
-              <div class="price-amt">₱XX</div>
-              <div class="price-dur">30 days</div>
+              <div class="price-amt">$349.99</div>
+              <div class="price-dur">500 Limit</div>
             </div>
             <div class="price-card">
               <div class="price-name">UNLIMITED</div>
               <div class="price-limit">no limit</div>
-              <div class="price-amt">₱XX</div>
-              <div class="price-dur">30 days</div>
+              <div class="price-amt">$499.99</div>
+              <div class="price-dur">60 days</div>
             </div>
           </div>
           <div class="discord-section">
