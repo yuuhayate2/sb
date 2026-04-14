@@ -78,81 +78,78 @@ def get_hwid(ip):
     return hashlib.sha256(ip.encode()).hexdigest()
 
 # ── MailWave ──────────────────────────────────────────────────────────────────
-def mw_setup():
+def mw_create_session():
+    """Create a persistent MailWave session and return (session, csrf, email)."""
     try:
-        r = requests.get(f"{MW_BASE}/", proxies=NO_PROXY, timeout=15)
+        sess = requests.Session()
+        sess.proxies = NO_PROXY
+        r = sess.get(f"{MW_BASE}/", timeout=15)
         token = re.search(r'<meta name="csrf-token" content="([^"]+)"', r.text)
         csrf = token.group(1) if token else None
-        return dict(r.cookies), csrf
-    except:
-        return None, None
+        if not csrf:
+            return None, None, None
+        # Get random alias
+        for _ in range(20):
+            alias = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+            try:
+                r2 = sess.post(f"{MW_BASE}/change",
+                    data={"_token": csrf, "name": alias, "domain": MW_DOMAIN},
+                    timeout=15)
+                # Refresh csrf from session cookies
+                csrf = unquote(sess.cookies.get("XSRF-TOKEN", csrf))
+                r3 = sess.post(f"{MW_BASE}/get_messages",
+                    headers={"Content-Type": "application/json", "X-CSRF-TOKEN": csrf},
+                    timeout=15)
+                mailbox = r3.json().get("mailbox", "")
+                if MW_DOMAIN in mailbox:
+                    print(f"[mw] session ready: {mailbox}")
+                    return sess, csrf, mailbox
+            except Exception as e:
+                print(f"[mw] alias error: {e}")
+    except Exception as e:
+        print(f"[mw] session error: {e}")
+    return None, None, None
+
+# Keep old names for compatibility
+def mw_setup():
+    return {}, None
 
 def mw_get_email(cookies, csrf):
-    """Get a fresh email alias and return (email, cookies, csrf) all in sync."""
-    if not csrf or cookies is None: return None, cookies, csrf
-    for _ in range(20):
-        alias = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-        try:
-            r = requests.post(f"{MW_BASE}/change",
-                data={"_token": csrf, "name": alias, "domain": MW_DOMAIN},
-                cookies=cookies, proxies=NO_PROXY, timeout=15)
-            cookies.update(dict(r.cookies))
-            # Always refresh csrf from latest cookies
-            new_csrf = unquote(cookies.get("XSRF-TOKEN", csrf))
-            r2 = requests.post(f"{MW_BASE}/get_messages",
-                headers={"Content-Type": "application/json", "X-CSRF-TOKEN": new_csrf},
-                cookies=cookies, proxies=NO_PROXY, timeout=15)
-            data = r2.json()
-            mailbox = data.get("mailbox", "")
-            if MW_DOMAIN in mailbox:
-                print(f"[mw] email ready: {mailbox}")
-                return mailbox, cookies, new_csrf
-        except Exception as e:
-            print(f"[mw] get_email error: {e}")
     return None, cookies, csrf
 
 # ── MailWave inbox polling ────────────────────────────────────────────────────
-def mw_poll_code(cookies, csrf, email_addr, existing_ids=None, timeout=90):
-    """Poll MailWave for a NEW ScriptBlox 7-digit code — ignores pre-existing messages."""
+def mw_poll_code(mw_sess, csrf, email_addr, timeout=90):
+    """Poll MailWave session for ScriptBlox 7-digit code."""
     import time as _t
-    if existing_ids is None:
-        existing_ids = set()
-    print(f"[poll] starting with {len(existing_ids)} existing IDs to skip")
     deadline = _t.time() + timeout
+    seen_ids = set()
     while _t.time() < deadline:
         try:
-            tok = unquote(cookies.get("XSRF-TOKEN", csrf))
-            r = requests.post(f"{MW_BASE}/get_messages",
-                headers={"Content-Type": "application/json", "X-CSRF-TOKEN": tok},
-                cookies=cookies, proxies=NO_PROXY, timeout=15)
+            fresh_csrf = unquote(mw_sess.cookies.get("XSRF-TOKEN", csrf))
+            r = mw_sess.post(f"{MW_BASE}/get_messages",
+                headers={"Content-Type": "application/json", "X-CSRF-TOKEN": fresh_csrf},
+                timeout=15)
             messages = r.json().get("messages", [])
-            print(f"[poll] {len(messages)} total messages, {len(existing_ids)} existing")
-
+            print(f"[poll] {len(messages)} messages")
             for msg in messages:
-                msg_id = msg.get("id", "")
-                # Skip pre-existing messages
-                if msg_id in existing_ids:
+                msg_id = msg.get("id","")
+                if msg_id in seen_ids:
                     continue
-                # Only from ScriptBlox
                 sender = (msg.get("from_email","") + msg.get("from","")).lower()
                 if "scriptblox" not in sender:
+                    seen_ids.add(msg_id)
                     continue
-
                 content = msg.get("content") or msg.get("html") or msg.get("body") or ""
-                if isinstance(content, bool):
-                    content = ""
+                if isinstance(content, bool): content = ""
                 content = str(content)
-
                 match = re.search(r"\b(\d{7})\b", content)
                 if match:
-                    code = match.group(1)
-                    print(f"[poll] found new code: {code}")
-                    return code
-                print(f"[poll] new msg found but no code yet, id={msg_id}")
-
+                    print(f"[poll] code found: {match.group(1)}")
+                    return match.group(1)
+                seen_ids.add(msg_id)
         except Exception as e:
             print(f"[poll] error: {e}")
-        _t.sleep(3)
+        _t.sleep(1)
     return None
 
 def sb_login(email, password, proxy_r):
@@ -291,7 +288,7 @@ def create_account(slot):
     global current_key, license_record
     if state["stop"]: return
 
-    # Check limit before this slot
+    # ── Check limit ───────────────────────────────────────────────────────────
     if license_record:
         limit = license_record.get("accounts_limit", 0)
         if limit < 9999:
@@ -309,9 +306,9 @@ def create_account(slot):
     proxy    = get_random_proxy(proxies_list)
     proxy_r  = proxy_to_requests(proxy)
 
-    mw_cookies, mw_csrf = mw_setup()
-    captcha            = solve_turnstile_capsolver()
-    email_addr, mw_cookies, mw_csrf = mw_get_email(mw_cookies, mw_csrf)
+    # ── Setup MailWave session + CapSolver simultaneously ─────────────────────
+    mw_sess, mw_csrf, email_addr = mw_create_session()
+    captcha = solve_turnstile_capsolver()
 
     if not email_addr or not captcha:
         state["failed"] += 1
@@ -320,22 +317,9 @@ def create_account(slot):
 
     log_emit(f"[#{slot}] [✓] Starting...", "dim")
     log_emit(f"[#{slot}] [✓] Loading signup page...", "dim")
-
-    # Snapshot existing inbox IDs BEFORE signup
-    existing_ids = set()
-    try:
-        tok = unquote(mw_cookies.get("XSRF-TOKEN", mw_csrf))
-        snap_r = requests.post(f"{MW_BASE}/get_messages",
-            headers={"Content-Type": "application/json", "X-CSRF-TOKEN": tok},
-            cookies=mw_cookies, proxies=NO_PROXY, timeout=15)
-        for msg in snap_r.json().get("messages", []):
-            existing_ids.add(msg.get("id",""))
-        print(f"[poll] snapshot: {len(existing_ids)} existing IDs")
-    except Exception as e:
-        print(f"[poll] snapshot error: {e}")
+    log_emit(f"[#{slot}] [✓] Solving Turnstile captcha...", "dim")
 
     # ── Step 1: Signup ────────────────────────────────────────────────────────
-    log_emit(f"[#{slot}] [✓] Solving Turnstile captcha...", "dim")
     try:
         r = requests.post(SB_SIGNUP, json={
             "email": email_addr, "username": username,
@@ -357,8 +341,8 @@ def create_account(slot):
     log_emit(f"[#{slot}] [✓] Navigating to verification...", "dim")
     log_emit(f"[#{slot}] [✓] Waiting for verification email...", "dim")
 
-    # ── Step 2: Poll inbox for 7-digit code ──────────────────────────────────
-    verify_code = mw_poll_code(mw_cookies, mw_csrf, email_addr, existing_ids=existing_ids, timeout=90)
+    # ── Step 2: Poll MailWave session for code ────────────────────────────────
+    verify_code = mw_poll_code(mw_sess, mw_csrf, email_addr, timeout=90)
 
     verified = False
     if verify_code:
@@ -386,7 +370,7 @@ def create_account(slot):
         log_emit(f"[#{slot}] [✓] Fetching cookies...", "dim")
         cookies_data, _ = sb_login(email_addr, password, proxy_r)
 
-    # ── Step 4: Save & send ──────────────────────────────────────────────────
+    # ── Step 4: Save + Send ───────────────────────────────────────────────────
     with session_lock:
         increment_used(current_key)
 
