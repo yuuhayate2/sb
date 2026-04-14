@@ -105,8 +105,8 @@ def mw_get_email(cookies, csrf):
     return None, csrf
 
 # ── MailWave inbox polling ────────────────────────────────────────────────────
-def mw_poll_inbox(cookies, csrf, timeout=90):
-    """Poll MailWave inbox until verification email arrives. Returns verify URL or None."""
+def mw_poll_code(cookies, csrf, timeout=90):
+    """Poll MailWave inbox for ScriptBlox 7-digit verification code."""
     import time as _t
     deadline = _t.time() + timeout
     while _t.time() < deadline:
@@ -118,28 +118,33 @@ def mw_poll_inbox(cookies, csrf, timeout=90):
             data = r.json()
             messages = data.get("messages", [])
             for msg in messages:
-                # html field may be escaped JSON string or raw HTML
-                raw = msg.get("html", "") or msg.get("body", "")
-                if isinstance(raw, bool):
-                    raw = ""
-                # Unescape if needed
-                body = raw.replace("\n", "").replace("\t", "").replace("\r", "")
-                # Find scriptblox verify link
-                match = re.search("https?://scriptblox\.com/[\w/?=&%+\-_.#]+", body)
+                # Try all possible content fields
+                content = (
+                    msg.get("content") or
+                    msg.get("html") or
+                    msg.get("body") or
+                    msg.get("text") or ""
+                )
+                if isinstance(content, bool):
+                    content = ""
+                content = str(content)
+                # Look for 7-digit code (ScriptBlox sends a numeric code)
+                match = re.search(r"\b(\d{7})\b", content)
                 if match:
-                    url = match.group(0).rstrip(".,;)")
-                    return url
-                # Try token param anywhere
-                match2 = re.search(r'token=([A-Za-z0-9_\-%.]+)', body)
+                    code = match.group(1)
+                    print(f"[poll] found code: {code}")
+                    return code
+                # Fallback: any 6-7 digit number
+                match2 = re.search(r"\b(\d{6,7})\b", content)
                 if match2:
-                    token = unquote(match2.group(1))
-                    return f"https://scriptblox.com/api/auth/verify-email?token={token}"
+                    code = match2.group(1)
+                    print(f"[poll] found code (fallback): {code}")
+                    return code
         except Exception as e:
             print(f"[poll] error: {e}")
         _t.sleep(3)
     return None
 
-# ── ScriptBlox login to get cookies ──────────────────────────────────────────
 def sb_login(email, password, proxy_r):
     """Login to ScriptBlox and return session cookies in Cookie-Editor format."""
     try:
@@ -323,26 +328,30 @@ def create_account(slot):
         log_emit(f"[#{slot}] Signup failed: {resp.get('message','')}", "err")
         return
 
-    log_emit(f"[#{slot}] Account created — waiting for verification email...", "dim")
+    log_emit(f"[#{slot}] Account created — waiting for verification code...", "dim")
 
-    # ── Step 2: Poll inbox for verification link ───────────────────────────────
-    verify_url = mw_poll_inbox(mw_cookies, mw_csrf, timeout=90)
+    # ── Step 2: Poll inbox for 7-digit code ───────────────────────────────────
+    verify_code = mw_poll_code(mw_cookies, mw_csrf, timeout=90)
 
     verified = False
-    if verify_url:
-        log_emit(f"[#{slot}] Verification email received — verifying...", "dim")
+    if verify_code:
+        log_emit(f"[#{slot}] Code received — verifying...", "dim")
         try:
-            vr = requests.get(verify_url, headers=sb_headers(), proxies=proxy_r, timeout=20, verify=False)
-            if vr.status_code in (200, 302) or "verified" in vr.text.lower() or "success" in vr.text.lower():
+            # Submit code to ScriptBlox verify API
+            vr = requests.post("https://scriptblox.com/api/auth/verify",
+                json={"code": verify_code},
+                headers=sb_headers(),
+                proxies=proxy_r, timeout=20, verify=False)
+            vdata = vr.json() if vr.content else {}
+            if vr.status_code in (200, 201) and not vdata.get("error"):
                 verified = True
-                log_emit(f"[#{slot}] Email verified ✓", "dim")
+                log_emit(f"[#{slot}] Verified ✓", "dim")
             else:
-                log_emit(f"[#{slot}] Verify request sent (status {vr.status_code})", "dim")
-                verified = True  # assume ok if no error
-        except:
-            log_emit(f"[#{slot}] Verify request failed", "dim")
+                log_emit(f"[#{slot}] Verify failed: {vdata.get('message','')}", "dim")
+        except Exception as e:
+            log_emit(f"[#{slot}] Verify error: {e}", "dim")
     else:
-        log_emit(f"[#{slot}] Verification email timeout — saving unverified", "dim")
+        log_emit(f"[#{slot}] Code timeout — saving unverified", "dim")
 
     # ── Step 3: Login to get cookies ──────────────────────────────────────────
     cookies_data = None
