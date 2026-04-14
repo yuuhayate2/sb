@@ -222,7 +222,7 @@ def send_webhook(username, password, email, cookies_json=None, verified=False):
         if cookies_json:
             online_url = upload_cookies_online(cookies_json)
 
-        # Build description like image
+        # Build embed matching reference format exactly
         desc_lines = []
         if verified:
             desc_lines.append(f"\U0001f4c5 **Can post after:** {can_post}")
@@ -234,7 +234,7 @@ def send_webhook(username, password, email, cookies_json=None, verified=False):
 
         embed = {
             "title": "\u2705 ScriptBlox Account Ready!" if verified else "\U0001f3af ScriptBlox Account Generated",
-            "color": 0x00e87a if verified else 0x00ffcc,
+            "color": 0x57F287 if verified else 0x00ffcc,
             "description": description,
             "footer": {"text": "sblox gen"},
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -308,9 +308,11 @@ def create_account(slot):
         log_emit(f"[#{slot}] Setup failed (email/captcha)", "err")
         return
 
-    log_emit(f"[#{slot}] creating account...", "dim")
+    log_emit(f"[#{slot}] [✓] Starting...", "dim")
+    log_emit(f"[#{slot}] [✓] Loading signup page...", "dim")
 
     # ── Step 1: Signup ────────────────────────────────────────────────────────
+    log_emit(f"[#{slot}] [✓] Solving Turnstile captcha...", "dim")
     try:
         r = requests.post(SB_SIGNUP, json={
             "email": email_addr, "username": username,
@@ -328,43 +330,40 @@ def create_account(slot):
         log_emit(f"[#{slot}] Signup failed: {resp.get('message','')}", "err")
         return
 
-    log_emit(f"[#{slot}] Account created — waiting for verification code...", "dim")
+    log_emit(f"[#{slot}] [✓] Creating account...", "dim")
+    log_emit(f"[#{slot}] [✓] Navigating to verification...", "dim")
+    log_emit(f"[#{slot}] [✓] Waiting for verification email...", "dim")
 
-    # ── Step 2: Poll inbox for 7-digit code ───────────────────────────────────
+    # ── Step 2: Poll inbox for 7-digit code ──────────────────────────────────
     verify_code = mw_poll_code(mw_cookies, mw_csrf, timeout=90)
 
     verified = False
     if verify_code:
-        log_emit(f"[#{slot}] Code received — verifying...", "dim")
+        log_emit(f"[#{slot}] [✓] Entering verification code...", "dim")
         try:
-            # Submit code to ScriptBlox verify API
             vr = requests.post("https://scriptblox.com/api/auth/verify",
-                json={"code": verify_code},
+                json={"vCode": int(verify_code)},
                 headers=sb_headers(),
                 proxies=proxy_r, timeout=20, verify=False)
             vdata = vr.json() if vr.content else {}
-            if vr.status_code in (200, 201) and not vdata.get("error"):
+            if vdata.get("token") or vdata.get("message") == False:
                 verified = True
-                log_emit(f"[#{slot}] Verified ✓", "dim")
             else:
-                log_emit(f"[#{slot}] Verify failed: {vdata.get('message','')}", "dim")
+                log_emit(f"[#{slot}] Verify failed: {vdata}", "err")
         except Exception as e:
-            log_emit(f"[#{slot}] Verify error: {e}", "dim")
+            log_emit(f"[#{slot}] Verify error: {e}", "err")
     else:
         log_emit(f"[#{slot}] Code timeout — saving unverified", "dim")
 
-    # ── Step 3: Login to get cookies ──────────────────────────────────────────
+    # ── Step 3: Login to get cookies ─────────────────────────────────────────
     cookies_data = None
     if verified:
         import time as _time
-        _time.sleep(2)  # small delay before login
+        _time.sleep(2)
+        log_emit(f"[#{slot}] [✓] Fetching cookies...", "dim")
         cookies_data, _ = sb_login(email_addr, password, proxy_r)
-        if cookies_data:
-            log_emit(f"[#{slot}] Cookies captured ✓", "dim")
-        else:
-            log_emit(f"[#{slot}] Cookie capture failed", "dim")
 
-    # ── Step 4: Save & send ───────────────────────────────────────────────────
+    # ── Step 4: Save & send ──────────────────────────────────────────────────
     with session_lock:
         increment_used(current_key)
 
@@ -378,7 +377,12 @@ def create_account(slot):
 
     send_webhook(username, password, email_addr, cookies_json=cookies_data, verified=verified)
     state["created"] += 1
-    log_emit(f"[#{slot}] ✓ {username} | {'verified' if verified else 'unverified'}", "ok")
+    if verified and cookies_data:
+        log_emit(f"[#{slot}] [►] Done!", "ok")
+    elif verified:
+        log_emit(f"[#{slot}] [►] Done! (no cookies)", "ok")
+    else:
+        log_emit(f"[#{slot}] [►] Done! (unverified)", "warn")
 
 def run_generator(count, concurrent):
     sem = threading.Semaphore(concurrent)
