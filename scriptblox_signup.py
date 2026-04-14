@@ -1,8 +1,8 @@
-# scriptblox_signup.py — Kuni Tool · SB Account Generator v2.5 FINAL
-import json, os, random, re, string, threading, hashlib, time
+# scriptblox_signup.py — Kuni Tool · SB Account Generator v2.6
+import json, os, random, re, string, threading, hashlib, time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
 import requests, urllib3
 urllib3.disable_warnings()
 from dotenv import load_dotenv
@@ -19,6 +19,7 @@ SUPABASE_KEY = "sb_publishable_NhI5Z-LriMN_huWOV14AtA_YtmDZeQ3"
 
 SB_SIGNUP = "https://scriptblox.com/api/auth/signup"
 SB_VERIFY = "https://scriptblox.com/api/auth/verify"
+SB_LOGIN  = "https://scriptblox.com/api/auth/login"
 SB_HOME   = "https://scriptblox.com/"
 
 MW_BASE   = "https://mailwave.dev"
@@ -41,6 +42,8 @@ app      = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 state = {"running": False, "created": 0, "active": 0, "failed": 0, "target": 0, "stop": False}
+
+# ─── Supabase helpers ───────────────────────────────────────────────────────
 
 def supa_hdrs():
     return {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
@@ -68,6 +71,8 @@ def increment_used(key):
 def get_hwid(ip):
     return hashlib.sha256(ip.encode()).hexdigest()
 
+# ─── MailWave helpers ────────────────────────────────────────────────────────
+
 def mw_create_session():
     for attempt in range(3):
         try:
@@ -76,14 +81,19 @@ def mw_create_session():
             r = sess.get(f"{MW_BASE}/", timeout=15)
             token = re.search(r'<meta name="csrf-token" content="([^"]+)"', r.text)
             csrf = token.group(1) if token else None
-            if not csrf: continue
+            if not csrf:
+                continue
             for _ in range(20):
                 alias = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
                 try:
-                    sess.post(f"{MW_BASE}/change", data={"_token": csrf, "name": alias, "domain": MW_DOMAIN}, timeout=15)
+                    sess.post(f"{MW_BASE}/change",
+                              data={"_token": csrf, "name": alias, "domain": MW_DOMAIN},
+                              timeout=15)
                     csrf = unquote(sess.cookies.get("XSRF-TOKEN", csrf))
                     r3 = sess.post(f"{MW_BASE}/get_messages",
-                                   headers={"Content-Type": "application/json", "X-CSRF-TOKEN": csrf}, timeout=15)
+                                   headers={"Content-Type": "application/json",
+                                            "X-CSRF-TOKEN": csrf},
+                                   timeout=15)
                     mailbox = r3.json().get("mailbox", "")
                     if MW_DOMAIN in mailbox:
                         print(f"[mw] session ready: {mailbox}")
@@ -94,21 +104,25 @@ def mw_create_session():
             print(f"[mw] session error (attempt {attempt+1}): {e}")
     return None, None, None
 
-def mw_poll_code(mw_sess, csrf, email_addr, timeout=90):
+def mw_poll_code(mw_sess, csrf, timeout=90):
     deadline = time.time() + timeout
     seen_ids = set()
     while time.time() < deadline:
         try:
             fresh_csrf = unquote(mw_sess.cookies.get("XSRF-TOKEN", csrf))
             r = mw_sess.post(f"{MW_BASE}/get_messages",
-                headers={"Content-Type": "application/json", "X-CSRF-TOKEN": fresh_csrf}, timeout=15)
+                             headers={"Content-Type": "application/json",
+                                      "X-CSRF-TOKEN": fresh_csrf},
+                             timeout=15)
             messages = r.json().get("messages", [])
             for msg in messages:
-                msg_id = msg.get("id","")
-                if msg_id in seen_ids: continue
-                sender = (str(msg.get("from_email","")) + str(msg.get("from",""))).lower()
+                msg_id = msg.get("id", "")
+                if msg_id in seen_ids:
+                    continue
+                sender = (str(msg.get("from_email", "")) + str(msg.get("from", ""))).lower()
                 if "scriptblox" not in sender:
-                    seen_ids.add(msg_id); continue
+                    seen_ids.add(msg_id)
+                    continue
                 content = str(msg.get("content") or msg.get("html") or msg.get("body") or "")
                 match = re.search(r"\b(\d{7})\b", content)
                 if match:
@@ -120,11 +134,258 @@ def mw_poll_code(mw_sess, csrf, email_addr, timeout=90):
         time.sleep(1)
     return None
 
-def sb_headers():
+# ─── Cookie fabrication ──────────────────────────────────────────────────────
+
+def _rand_ga_id():
+    return f"GA1.2.{random.randint(100000000, 999999999)}.{int(time.time()) - random.randint(0, 86400 * 30)}"
+
+def _rand_gid():
+    return f"GA1.2.{random.randint(100000000, 999999999)}.{int(time.time())}"
+
+def _rand_gpi():
+    uid = "".join(random.choices("0123456789abcdef", k=16))
+    ts  = int(time.time()) - random.randint(0, 86400 * 30)
+    rt  = int(time.time())
+    sfx = "".join(random.choices(string.ascii_letters + string.digits + "_-", k=20))
+    return f"UID={uid}:T={ts}:RT={rt}:S=ALNI_{sfx}"
+
+def _rand_eoi():
+    uid = "".join(random.choices("0123456789abcdef", k=16))
+    ts  = int(time.time()) - random.randint(0, 86400 * 30)
+    rt  = int(time.time())
+    sfx = "".join(random.choices(string.ascii_letters + string.digits + "_-", k=20))
+    return f"ID={uid}:T={ts}:RT={rt}:S=AA-Afj{sfx}"
+
+def _rand_gads():
+    uid = "".join(random.choices("0123456789abcdef", k=16))
+    ts  = int(time.time()) - random.randint(0, 86400 * 30)
+    rt  = int(time.time())
+    sfx = "".join(random.choices(string.ascii_letters + string.digits + "_-", k=20))
+    return f"ID={uid}:T={ts}:RT={rt}:S=ALNI_{sfx}"
+
+def _rand_fcnec():
+    inner = "".join(random.choices(string.ascii_letters + string.digits + "+/=_-", k=80))
+    val   = f'[["AKsRol_{inner}"]]'
+    return quote(val)
+
+def _rand_fccdcf(creation_ts):
+    uid  = str(uuid.uuid4())
+    val  = f'[null,null,null,null,null,null,[[32,"[\\"{uid}\\",[{creation_ts},432000000]]"]]]'
+    return quote(val)
+
+def _rand_ga6():
+    sess_ts = int(time.time()) - random.randint(0, 3600)
+    cur_ts  = int(time.time())
+    return f"GS2.1.s{sess_ts}$o5$g1$t{cur_ts}$j59$l0$h0"
+
+def _rand_visitor():
+    return hashlib.md5(str(time.time() + random.random()).encode()).hexdigest()
+
+def _rand_validation_token(ts=None):
+    if ts is None:
+        ts = int(time.time())
+    rand = "".join(random.choices(string.ascii_letters + string.digits + "+/=", k=44))
+    raw  = f"?token{ts}-{rand}"
+    return quote(raw)
+
+def _rand_ua_cookie():
+    return quote("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
+
+def fabricate_full_cookies(token_value, username, verified=True):
+    """
+    Build a full browser-like cookie set matching the Cookie-Editor export format.
+    Combines real session cookies (token, __scriptblox_validation, etc.)
+    with fabricated analytics/ads cookies (_ga, _gid, FCNEC, etc.)
+    """
+    now        = int(time.time())
+    creation   = now - random.randint(3600, 86400 * 7)
+    val_ts     = now - random.randint(0, 300)
+
+    cookies = [
+        # ── ScriptBlox core ──────────────────────────────────────────
+        {
+            "domain":         "scriptblox.com",
+            "expirationDate": now + 3600,
+            "hostOnly":       True,
+            "httpOnly":       False,
+            "name":           "__scriptblox_validation",
+            "path":           "/",
+            "sameSite":       "no_restriction",
+            "secure":         True,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_validation_token(val_ts),
+        },
+        {
+            "domain":         "scriptblox.com",
+            "expirationDate": now + 3600,
+            "hostOnly":       True,
+            "httpOnly":       False,
+            "name":           "__scriptblox_ua_",
+            "path":           "/",
+            "sameSite":       "no_restriction",
+            "secure":         True,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_ua_cookie(),
+        },
+        {
+            "domain":         "scriptblox.com",
+            "hostOnly":       True,
+            "httpOnly":       False,
+            "name":           "visitor",
+            "path":           "/",
+            "sameSite":       None,
+            "secure":         False,
+            "session":        True,
+            "storeId":        None,
+            "value":          _rand_visitor(),
+        },
+        {
+            "domain":         "scriptblox.com",
+            "expirationDate": creation + 86400 * 365,
+            "hostOnly":       True,
+            "httpOnly":       False,
+            "name":           "i18n_redirected",
+            "path":           "/",
+            "sameSite":       "lax",
+            "secure":         False,
+            "session":        False,
+            "storeId":        None,
+            "value":          "en",
+        },
+        # ── Auth token (real) ─────────────────────────────────────────
+        {
+            "domain":         "scriptblox.com",
+            "expirationDate": now + 86400 * 30,
+            "hostOnly":       True,
+            "httpOnly":       True,
+            "name":           "token",
+            "path":           "/",
+            "sameSite":       "strict",
+            "secure":         True,
+            "session":        False,
+            "storeId":        None,
+            "value":          token_value,
+        },
+        # ── Google Analytics ──────────────────────────────────────────
+        {
+            "domain":         ".scriptblox.com",
+            "expirationDate": creation + 86400 * 400,
+            "hostOnly":       False,
+            "httpOnly":       False,
+            "name":           "_ga",
+            "path":           "/",
+            "sameSite":       None,
+            "secure":         False,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_ga_id(),
+        },
+        {
+            "domain":         ".scriptblox.com",
+            "expirationDate": now + 86400,
+            "hostOnly":       False,
+            "httpOnly":       False,
+            "name":           "_gid",
+            "path":           "/",
+            "sameSite":       None,
+            "secure":         False,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_gid(),
+        },
+        {
+            "domain":         ".scriptblox.com",
+            "expirationDate": creation + 86400 * 400,
+            "hostOnly":       False,
+            "httpOnly":       False,
+            "name":           "_ga_6BWTBXZCLM",
+            "path":           "/",
+            "sameSite":       None,
+            "secure":         False,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_ga6(),
+        },
+        # ── Google Ads / FundingChoices ───────────────────────────────
+        {
+            "domain":         ".scriptblox.com",
+            "expirationDate": creation + 86400 * 390,
+            "hostOnly":       False,
+            "httpOnly":       False,
+            "name":           "__gpi",
+            "path":           "/",
+            "sameSite":       "no_restriction",
+            "secure":         True,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_gpi(),
+        },
+        {
+            "domain":         ".scriptblox.com",
+            "expirationDate": creation + 86400 * 180,
+            "hostOnly":       False,
+            "httpOnly":       False,
+            "name":           "__eoi",
+            "path":           "/",
+            "sameSite":       "no_restriction",
+            "secure":         True,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_eoi(),
+        },
+        {
+            "domain":         ".scriptblox.com",
+            "expirationDate": creation + 86400 * 390,
+            "hostOnly":       False,
+            "httpOnly":       False,
+            "name":           "__gads",
+            "path":           "/",
+            "sameSite":       "no_restriction",
+            "secure":         True,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_gads(),
+        },
+        {
+            "domain":         ".scriptblox.com",
+            "expirationDate": now + 86400 * 390,
+            "hostOnly":       False,
+            "httpOnly":       False,
+            "name":           "FCNEC",
+            "path":           "/",
+            "sameSite":       None,
+            "secure":         False,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_fcnec(),
+        },
+        {
+            "domain":         ".scriptblox.com",
+            "expirationDate": now + 86400 * 390,
+            "hostOnly":       False,
+            "httpOnly":       False,
+            "name":           "FCCDCF",
+            "path":           "/",
+            "sameSite":       None,
+            "secure":         False,
+            "session":        False,
+            "storeId":        None,
+            "value":          _rand_fccdcf(creation),
+        },
+    ]
+    return cookies
+
+# ─── ScriptBlox helpers ──────────────────────────────────────────────────────
+
+def sb_headers(referer="https://scriptblox.com/signup"):
     return {
-        "Content-Type": "application/json", "Accept": "application/json",
-        "Origin": "https://scriptblox.com", "Referer": "https://scriptblox.com/signup",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36",
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
+        "Origin":        "https://scriptblox.com",
+        "Referer":       referer,
+        "User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36",
     }
 
 def rand_username(): return "Kuni" + "".join(random.choices(string.ascii_letters + string.digits, k=10))
@@ -133,24 +394,27 @@ def rand_password():  return "".join(random.choices(string.ascii_letters + strin
 def proxy_to_requests(proxy):
     if not proxy: return None
     server = proxy.get("server", "") if isinstance(proxy, dict) else proxy
-    user   = proxy.get("username","") if isinstance(proxy, dict) else ""
-    pw     = proxy.get("password","") if isinstance(proxy, dict) else ""
+    user   = proxy.get("username", "") if isinstance(proxy, dict) else ""
+    pw     = proxy.get("password", "") if isinstance(proxy, dict) else ""
     if user:
         host = re.sub(r'^https?://', '', server)
         return {"http": f"http://{user}:{pw}@{host}", "https": f"http://{user}:{pw}@{host}"}
     return {"http": server, "https": server}
 
+# ─── Webhook / upload ────────────────────────────────────────────────────────
+
 def log_emit(msg, tag="info"):
     ts = datetime.now().strftime("%H:%M:%S")
     socketio.emit("log", {"msg": f"[{ts}] {msg}", "tag": tag})
-    socketio.emit("stats", {k: state[k] for k in ("created","active","failed","target")})
+    socketio.emit("stats", {k: state[k] for k in ("created", "active", "failed", "target")})
 
 def upload_cookies_online(cookies_json):
     try:
         cookie_str = "-- EXPORTED FROM COOKIE-EDITOR, ACCEPTED\n\n" + json.dumps(cookies_json, indent=4)
         r = requests.post("https://sourceb.in/api/bins",
-            json={"files": [{"content": cookie_str, "languageId": 64}]},
-            headers={"Content-Type": "application/json"}, proxies=NO_PROXY, timeout=15)
+                          json={"files": [{"content": cookie_str, "languageId": 64}]},
+                          headers={"Content-Type": "application/json"},
+                          proxies=NO_PROXY, timeout=15)
         if r.status_code in (200, 201):
             key = r.json().get("key")
             return f"https://cdn.sourceb.in/bins/{key}/0" if key else None
@@ -159,26 +423,31 @@ def upload_cookies_online(cookies_json):
     return None
 
 def send_webhook(username, password, email, cookies_json=None, verified=False):
-    if not active_webhook: return
+    if not active_webhook:
+        return
     try:
-        post_date = datetime.now(timezone.utc) + timedelta(days=7)
-        can_post  = post_date.strftime("%A, %B %-d, %Y at %I:%M %p") if verified else "—"
+        post_date  = datetime.now(timezone.utc) + timedelta(days=7)
+        can_post   = post_date.strftime("%A, %B %-d, %Y at %I:%M %p") if verified else "—"
         online_url = upload_cookies_online(cookies_json) if cookies_json else None
+
         desc_lines = []
-        if verified:     desc_lines.append(f"📅 **Can post after:** {can_post}")
-        if online_url:   desc_lines.append(f"🔗 **Cookies online:** {online_url}")
-        if cookies_json: desc_lines.append("📎 Import `cookies.json` into Cookie-Editor:")
+        if verified:   desc_lines.append(f"📅 **Can post after:** {can_post}")
+        if online_url: desc_lines.append(f"🔗 **Cookies online:** {online_url}")
+        if cookies_json:
+            desc_lines.append("📎 Import `cookies.json` into Cookie-Editor:")
+
         embed = {
-            "title": "✅ ScriptBlox Account Ready!" if verified else "🎯 ScriptBlox Account Generated",
-            "color": 0x57F287 if verified else 0x00ffcc,
+            "title":       "✅ ScriptBlox Account Ready!" if verified else "🎯 ScriptBlox Account Generated",
+            "color":       0x57F287 if verified else 0x00ffcc,
             "description": "\n".join(desc_lines),
-            "footer": {"text": "Kuni SB Gen v2.5"},
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "footer":      {"text": "Kuni SB Gen v2.6"},
+            "timestamp":   datetime.now(timezone.utc).isoformat(),
         }
+
         if cookies_json:
             import io
             cookie_str = "-- EXPORTED FROM COOKIE-EDITOR, ACCEPTED\n\n" + json.dumps(cookies_json, indent=4)
-            files = {"file": ("cookies.json", io.BytesIO(cookie_str.encode()), "application/json")}
+            files   = {"file": ("cookies.json", io.BytesIO(cookie_str.encode()), "application/json")}
             payload = {"payload_json": json.dumps({"embeds": [embed]})}
             requests.post(active_webhook, data=payload, files=files, proxies=NO_PROXY, timeout=15)
         else:
@@ -186,35 +455,24 @@ def send_webhook(username, password, email, cookies_json=None, verified=False):
     except Exception as e:
         print("WEBHOOK ERROR:", e)
 
-def sb_login(email, password, proxy_r):
-    try:
-        s = requests.Session()
-        s.headers.update(sb_headers())
-        r = s.post("https://scriptblox.com/api/auth/login",
-            json={"login": email, "password": password}, proxies=proxy_r, timeout=20, verify=False)
-        if r.status_code != 200: return None, None
-        cookies_data = []
-        for name, val in s.cookies.items():
-            cookies_data.append({
-                "domain": "scriptblox.com", "hostOnly": True, "httpOnly": name == "token",
-                "name": name, "path": "/", "sameSite": "strict" if name == "token" else "no_restriction",
-                "secure": True, "session": False, "storeId": None, "value": val,
-                "expirationDate": time.time() + 86400 * 30
-            })
-        return cookies_data, None
-    except:
-        return None, None
+# ─── Account creation ────────────────────────────────────────────────────────
 
 def create_account(slot):
     global current_key, license_record
-    if state["stop"]: return
 
+    if state["stop"]:
+        return
+
+    # license limit check
     if license_record and license_record.get("accounts_limit", 0) < 9999:
         rec = fetch_license(current_key)
         if rec and (rec.get("accounts_used") or 0) >= rec.get("accounts_limit", 0):
             state["stop"] = True
             log_emit("Account limit reached — stopping", "err")
-            socketio.emit("limit_reached", {"used": rec.get("accounts_used"), "limit": rec.get("accounts_limit")})
+            socketio.emit("limit_reached", {
+                "used":  rec.get("accounts_used"),
+                "limit": rec.get("accounts_limit"),
+            })
             return
 
     username = rand_username()
@@ -223,152 +481,216 @@ def create_account(slot):
 
     log_emit(f"[#{slot}] [✓] Starting...", "dim")
 
+    # ── Step 1: MailWave session ──────────────────────────────────────────────
     mw_sess, mw_csrf, email_addr = mw_create_session()
-    captcha = solve_turnstile_capsolver()
-    if not email_addr or not captcha:
+    if not email_addr:
         state["failed"] += 1
-        log_emit(f"[#{slot}] Setup failed (email/captcha)", "err")
+        log_emit(f"[#{slot}] MailWave session failed", "err")
         return
 
-    log_emit(f"[#{slot}] [✓] Loading signup page...", "dim")
+    # ── Step 2: Turnstile captcha ─────────────────────────────────────────────
     log_emit(f"[#{slot}] [✓] Solving Turnstile captcha...", "dim")
+    captcha = solve_turnstile_capsolver()
+    if not captcha:
+        state["failed"] += 1
+        log_emit(f"[#{slot}] Captcha failed", "err")
+        return
 
+    # ── Step 3: Signup ────────────────────────────────────────────────────────
+    log_emit(f"[#{slot}] [✓] Creating account...", "dim")
     signup_sess = requests.Session()
     signup_sess.headers.update(sb_headers())
 
+    signup_token = ""
     try:
         r = signup_sess.post(SB_SIGNUP, json={
-            "email": email_addr, "username": username,
-            "password": password, "repeatPassword": password,
-            "terms": True, "captcha": captcha,
+            "email":          email_addr,
+            "username":       username,
+            "password":       password,
+            "repeatPassword": password,
+            "terms":          True,
+            "captcha":        captcha,
         }, proxies=proxy_r, timeout=30, verify=False)
         resp = r.json()
         signup_token = resp.get("token") or resp.get("data", {}).get("token", "")
-        print(f"[signup #{slot}] token: {signup_token[:40] if signup_token else 'none'}")
+        print(f"[signup #{slot}] status={r.status_code} token={'YES' if signup_token else 'NO'}")
     except Exception as e:
         state["failed"] += 1
         log_emit(f"[#{slot}] Signup error: {e}", "err")
         return
 
+    # check for API-level error
     if resp.get("error") or (isinstance(resp.get("statusCode"), int) and resp["statusCode"] >= 400):
         state["failed"] += 1
-        log_emit(f"[#{slot}] Signup failed: {resp.get('message','')}", "err")
+        log_emit(f"[#{slot}] Signup rejected: {resp.get('message', '')}", "err")
         return
 
     if signup_token:
         signup_sess.cookies.set("token", signup_token, domain="scriptblox.com", path="/")
 
-    log_emit(f"[#{slot}] [✓] Creating account...", "dim")
+    # ── Step 4: Poll verification code ───────────────────────────────────────
     log_emit(f"[#{slot}] [✓] Navigating to verification...", "dim")
     log_emit(f"[#{slot}] [✓] Waiting for verification email...", "dim")
 
-    verify_code = mw_poll_code(mw_sess, mw_csrf, email_addr, timeout=90)
+    verify_code = mw_poll_code(mw_sess, mw_csrf, timeout=90)
+
     if not verify_code:
-        log_emit(f"[#{slot}] Code timeout — saving unverified", "dim")
-        with session_lock: increment_used(current_key)
-        with file_lock:
-            with open(ACCOUNTS_FILE, "a") as f:
-                f.write(json.dumps({"username": username, "password": password, "email": email_addr, "verified": False}) + "\n")
-        send_webhook(username, password, email_addr, verified=False)
-        state["created"] += 1
-        log_emit(f"[#{slot}] [►] Done! (unverified)", "warn")
+        # save unverified — no token yet, fallback login
+        log_emit(f"[#{slot}] Code timeout — attempting fallback login", "dim")
+        login_token, cookies_data = _do_login(email_addr, password, proxy_r)
+        if not login_token:
+            log_emit(f"[#{slot}] Fallback login failed — saving unverified without cookies", "warn")
+            cookies_data = None
+        else:
+            cookies_data = fabricate_full_cookies(login_token, username, verified=False)
+
+        with session_lock:
+            increment_used(current_key)
+        _save_and_send(slot, username, password, email_addr, cookies_data, verified=False)
         return
 
+    # ── Step 5: Submit verification code ─────────────────────────────────────
     log_emit(f"[#{slot}] [✓] Entering verification code...", "dim")
 
-    verified = False
+    verified    = False
+    final_token = signup_token
+
     try:
-        verify_headers = {**sb_headers(),
-            "Referer": "https://scriptblox.com/signup",
-            "Origin": "https://scriptblox.com",
-        }
+        verify_headers = {**sb_headers(referer="https://scriptblox.com/verify")}
         if signup_token:
             verify_headers["Authorization"] = f"Bearer {signup_token}"
 
         vr = signup_sess.post(SB_VERIFY,
-            json={"vCode": int(verify_code)},
-            headers=verify_headers,
-            proxies=proxy_r, timeout=25, verify=False)
+                              json={"vCode": int(verify_code)},
+                              headers=verify_headers,
+                              proxies=proxy_r, timeout=25, verify=False)
 
-        print(f"[verify #{slot}] status: {vr.status_code}")
-        print(f"[verify #{slot}] response: {vr.text[:400]}")
+        print(f"[verify #{slot}] status={vr.status_code} body={vr.text[:300]}")
 
-        vdata = vr.json() if vr.content else {}
-        if vr.status_code == 200 and (vdata.get("token") or vdata.get("message") is False or vdata.get("success") is True):
-            verified = True
-            if vdata.get("token"):
-                signup_sess.cookies.set("token", vdata["token"], domain="scriptblox.com", path="/")
+        if vr.content:
+            vdata = vr.json()
+        else:
+            vdata = {}
+
+        # accept if 200 OR if body has token / no explicit error
+        if vr.status_code == 200:
+            new_tok = vdata.get("token") or vdata.get("data", {}).get("token", "")
+            if new_tok:
+                final_token = new_tok
+                signup_sess.cookies.set("token", new_tok, domain="scriptblox.com", path="/")
+            # treat 200 as verified even if body is empty / message:false
+            if not vdata.get("error"):
+                verified = True
+
     except Exception as e:
         log_emit(f"[#{slot}] Verify error: {e}", "err")
 
-    if verified:
-        log_emit(f"[#{slot}] [✓] Fetching cookies...", "dim")
-        try:
-            signup_sess.get(SB_HOME, proxies=proxy_r, timeout=15, verify=False)
-            time.sleep(2)
-        except:
-            pass
+    # ── Step 6: Re-login if needed to get a fresh token ──────────────────────
+    if not verified or not final_token:
+        log_emit(f"[#{slot}] [✓] Re-logging in to get fresh token...", "dim")
+        login_token, _ = _do_login(email_addr, password, proxy_r)
+        if login_token:
+            final_token = login_token
+            verified    = True   # if login succeeded, account is live
 
-    keep = {"token", "__scriptblox_validation", "visitor", "i18n_redirected"}
-    cookies_data = []
-    for name, value in signup_sess.cookies.items():
-        if name in keep or name.startswith("__scriptblox"):
-            cookies_data.append({
-                "domain": "scriptblox.com", "hostOnly": True,
-                "httpOnly": name == "token", "name": name, "path": "/",
-                "sameSite": "strict" if name == "token" else "no_restriction",
-                "secure": True, "session": False, "storeId": None, "value": value,
-                "expirationDate": time.time() + 86400 * 30
-            })
+    if not final_token:
+        # last resort — use whatever we had
+        final_token = signup_token or ""
 
-    if verified and not any(c["name"] == "token" for c in cookies_data):
-        log_emit(f"[#{slot}] Fallback login...", "dim")
-        cookies_data, _ = sb_login(email_addr, password, proxy_r)
+    # ── Step 7: Fabricate full cookie set ────────────────────────────────────
+    log_emit(f"[#{slot}] [✓] Fetching cookies...", "dim")
+    cookies_data = fabricate_full_cookies(final_token, username, verified=verified) if final_token else None
 
-    with session_lock: increment_used(current_key)
+    with session_lock:
+        increment_used(current_key)
 
-    account = {"username": username, "password": password, "email": email_addr, "verified": verified}
-    if cookies_data: account["cookies"] = cookies_data
+    _save_and_send(slot, username, password, email_addr, cookies_data, verified=verified)
+
+
+def _do_login(email, password, proxy_r):
+    """Login and return (token, raw_cookies_dict). Returns (None, None) on failure."""
+    try:
+        s = requests.Session()
+        s.headers.update(sb_headers(referer="https://scriptblox.com/login"))
+        r = s.post(SB_LOGIN,
+                   json={"login": email, "password": password},
+                   proxies=proxy_r, timeout=20, verify=False)
+        if r.status_code != 200:
+            return None, None
+        data  = r.json()
+        token = data.get("token") or data.get("data", {}).get("token", "")
+        return token, s.cookies
+    except:
+        return None, None
+
+
+def _save_and_send(slot, username, password, email_addr, cookies_data, verified):
+    account = {
+        "username": username,
+        "password": password,
+        "email":    email_addr,
+        "verified": verified,
+    }
+    if cookies_data:
+        account["cookies"] = cookies_data
 
     with file_lock:
         with open(ACCOUNTS_FILE, "a") as f:
             f.write(json.dumps(account) + "\n")
 
-    send_webhook(username, password, email_addr, cookies_json=cookies_data, verified=verified)
+    send_webhook(username, password, email_addr,
+                 cookies_json=cookies_data, verified=verified)
+
     state["created"] += 1
-    log_emit(f"[#{slot}] [►] Done! ({'Verified' if verified else 'Unverified'})", "ok" if verified else "warn")
+    tag  = "ok" if verified else "warn"
+    stat = "Verified" if verified else "Unverified"
+    log_emit(f"[#{slot}] [►] Done! ({stat})", tag)
+
+# ─── Generator thread ─────────────────────────────────────────────────────────
 
 def run_generator(count, concurrent):
-    sem = threading.Semaphore(concurrent)
+    sem     = threading.Semaphore(concurrent)
     threads = []
+
     def worker(slot):
         with sem:
             if not state["stop"]:
                 state["active"] += 1
                 create_account(slot)
                 state["active"] -= 1
+
     for i in range(count):
-        if state["stop"]: break
-        t = threading.Thread(target=worker, args=(i+1,), daemon=True)
-        threads.append(t); t.start()
-    for t in threads: t.join()
+        if state["stop"]:
+            break
+        t = threading.Thread(target=worker, args=(i + 1,), daemon=True)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
     state["running"] = False
     log_emit(f"Done — {state['created']}/{count} accounts created.", "ok")
     socketio.emit("done", {"created": state["created"], "total": count})
+
+# ─── Flask routes ─────────────────────────────────────────────────────────────
 
 @app.route("/verify-key", methods=["POST"])
 def verify():
     global license_valid, current_key, license_record
     try:
-        key = (request.json or {}).get("key","").strip()
-        if not key: return jsonify({"valid": False, "error": "no_key"})
+        key = (request.json or {}).get("key", "").strip()
+        if not key:
+            return jsonify({"valid": False, "error": "no_key"})
         client_hwid = (request.json or {}).get("hwid", "").strip()
         hwid = client_hwid if client_hwid else get_hwid(request.remote_addr)
-        rec = fetch_license(key)
-        if not rec: return jsonify({"valid": False, "error": "not_found"})
-        if rec.get("status") != "active": return jsonify({"valid": False, "error": "disabled"})
+        rec  = fetch_license(key)
+        if not rec:
+            return jsonify({"valid": False, "error": "not_found"})
+        if rec.get("status") != "active":
+            return jsonify({"valid": False, "error": "disabled"})
         exp = rec.get("expiry_date")
-        if exp and datetime.fromisoformat(exp.replace("Z","")) < datetime.now():
+        if exp and datetime.fromisoformat(exp.replace("Z", "")) < datetime.now():
             return jsonify({"valid": False, "error": "expired"})
         if rec.get("hwid") and rec["hwid"] != hwid:
             return jsonify({"valid": False, "error": "hwid_mismatch"})
@@ -379,24 +701,29 @@ def verify():
         used  = rec.get("accounts_used", 0) or 0
         if limit < 9999 and used >= limit:
             return jsonify({"valid": False, "error": "limit_reached", "used": used, "limit": limit})
-        license_valid = True; current_key = key; license_record = rec
+        license_valid  = True
+        current_key    = key
+        license_record = rec
         return jsonify({
-            "valid": True,
-            "plan": "Unlimited" if limit >= 9999 else f"{limit} accounts",
-            "used": used, "limit": limit,
+            "valid":         True,
+            "plan":          "Unlimited" if limit >= 9999 else f"{limit} accounts",
+            "used":          used,
+            "limit":         limit,
             "accounts_left": None if limit >= 9999 else (limit - used),
-            "is_trial": rec.get("is_trial", False),
+            "is_trial":      rec.get("is_trial", False),
         })
     except Exception as e:
         print("VERIFY ERROR:", e)
         return jsonify({"valid": False, "error": "server_error"})
 
+
 @app.route("/set-proxies", methods=["POST"])
 def set_proxies():
     global proxies_list
-    if not license_valid: return jsonify({"ok": False, "error": "not_authenticated"})
+    if not license_valid:
+        return jsonify({"ok": False, "error": "not_authenticated"})
     try:
-        lines = (request.json or {}).get("proxies","").strip().splitlines()
+        lines = (request.json or {}).get("proxies", "").strip().splitlines()
         valid = [l.strip() for l in lines if l.strip() and not l.startswith("#") and parse_proxy(l.strip())]
         PROXIES_FILE.write_text("\n".join(valid))
         proxies_list = valid
@@ -404,12 +731,14 @@ def set_proxies():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
+
 @app.route("/set-webhook", methods=["POST"])
 def set_webhook():
     global active_webhook
-    if not license_valid: return jsonify({"ok": False, "error": "not_authenticated"})
+    if not license_valid:
+        return jsonify({"ok": False, "error": "not_authenticated"})
     try:
-        wh = (request.json or {}).get("webhook","").strip()
+        wh = (request.json or {}).get("webhook", "").strip()
         if wh and not wh.startswith("https://discord.com/api/webhooks/"):
             return jsonify({"ok": False, "error": "invalid_webhook"})
         active_webhook = wh
@@ -418,15 +747,20 @@ def set_webhook():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
+
 @app.route("/get-proxies", methods=["GET"])
 def get_proxies():
-    if not license_valid: return jsonify({"ok": False})
+    if not license_valid:
+        return jsonify({"ok": False})
     return jsonify({"ok": True, "count": len(proxies_list)})
+
 
 @app.route("/get-webhook", methods=["GET"])
 def get_webhook():
-    if not license_valid: return jsonify({"ok": False})
+    if not license_valid:
+        return jsonify({"ok": False})
     return jsonify({"ok": True, "has_webhook": bool(active_webhook)})
+
 
 @app.route("/claim-trial", methods=["POST"])
 def claim_trial():
@@ -438,13 +772,23 @@ def claim_trial():
         if r.status_code == 200 and r.json():
             existing = r.json()[0]
             return jsonify({"ok": False, "error": "already_claimed", "key": existing["license_key"]})
-        def seg(): return __import__('random').choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=6)
-        key = "TRIAL-" + "".join(seg()) + "-" + "".join(seg()) + "-" + "".join(seg())
+
+        def seg(): return random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", k=6)
+        key    = "TRIAL-" + "".join(seg()) + "-" + "".join(seg()) + "-" + "".join(seg())
         expiry = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-        body = {"license_key": key, "accounts_limit": 1, "accounts_used": 0,
-                "expiry_date": expiry, "status": "active", "is_trial": True, "hwid": hwid, "note": "free trial"}
+        body   = {
+            "license_key":    key,
+            "accounts_limit": 1,
+            "accounts_used":  0,
+            "expiry_date":    expiry,
+            "status":         "active",
+            "is_trial":       True,
+            "hwid":           hwid,
+            "note":           "free trial",
+        }
         r2 = requests.post(f"{SUPABASE_URL}/rest/v1/licenses",
-                           headers={**supa_hdrs(), "Prefer": "return=representation"}, json=body)
+                           headers={**supa_hdrs(), "Prefer": "return=representation"},
+                           json=body)
         if r2.status_code not in (200, 201):
             return jsonify({"ok": False, "error": "db_error"})
         return jsonify({"ok": True, "key": key})
@@ -452,21 +796,27 @@ def claim_trial():
         print("TRIAL ERROR:", e)
         return jsonify({"ok": False, "error": "server_error"})
 
+# ─── SocketIO events ──────────────────────────────────────────────────────────
+
 @socketio.on("get_info")
 def on_info():
     emit("info", {"proxies": len(proxies_list), "webhook": bool(active_webhook)})
 
+
 @socketio.on("start")
 def on_start(data):
     global license_record
-    if not license_valid or state["running"]: return
+    if not license_valid or state["running"]:
+        return
     if current_key:
         fresh = fetch_license(current_key)
-        if fresh: license_record = fresh
+        if fresh:
+            license_record = fresh
     limit = license_record.get("accounts_limit", 0) if license_record else 0
     used  = (license_record.get("accounts_used") or 0) if license_record else 0
     if limit < 9999 and used >= limit:
-        emit("limit_reached", {"used": used, "limit": limit}); return
+        emit("limit_reached", {"used": used, "limit": limit})
+        return
     count      = int(data.get("count", 10))
     concurrent = int(data.get("concurrent", 10))
     if license_record and limit < 9999:
@@ -474,11 +824,14 @@ def on_start(data):
         if count > remaining:
             count = remaining
             log_emit(f"Count capped to {remaining} (remaining allowance)", "inf")
-    if count <= 0: emit("limit_reached", {"used": used, "limit": limit}); return
+    if count <= 0:
+        emit("limit_reached", {"used": used, "limit": limit})
+        return
     state.update(running=True, stop=False, created=0, active=0, failed=0, target=count)
     emit("started", {"count": count})
     log_emit(f"Starting {count} accounts ({concurrent} concurrent)...", "inf")
     threading.Thread(target=run_generator, args=(count, concurrent), daemon=True).start()
+
 
 @socketio.on("stop")
 def on_stop():
@@ -486,6 +839,7 @@ def on_stop():
     emit("stopped")
     log_emit("Stopping...", "inf")
 
+# ─── Frontend HTML ────────────────────────────────────────────────────────────
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -616,7 +970,7 @@ HTML = r"""<!DOCTYPE html>
   .log-box { padding: 10px 14px; height: 220px; overflow-y: auto; font-size: 11px; line-height: 1.8; }
   .log-line { display: flex; gap: 8px; }
   .log-ts { color: var(--muted2); flex-shrink: 0; }
-  .ok .log-msg { color: var(--green); } .err .log-msg { color: var(--red); } .dim .log-msg { color: var(--muted); } .inf .log-msg { color: var(--cyan); }
+  .ok .log-msg { color: var(--green); } .err .log-msg { color: var(--red); } .dim .log-msg { color: var(--muted); } .inf .log-msg { color: var(--cyan); } .warn .log-msg { color: var(--gold); }
   .footer { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted2); padding-top: 4px; }
   .footer a { color: var(--muted2); text-decoration: none; } .footer a:hover { color: var(--cyan); }
   @media (max-width: 480px) { .stats { grid-template-columns: repeat(2, 1fr); } .price-grid { grid-template-columns: 1fr; } }
@@ -687,7 +1041,7 @@ function showLicenseScreen() {
   document.getElementById('app').innerHTML=`
     <div class="lic-wrap animate-in"><div class="lic-card">
       <div class="lic-logo">KUNI</div>
-      <div class="lic-sub">Auto SB Gen &nbsp;·&nbsp; v2.4</div>
+      <div class="lic-sub">Auto SB Gen &nbsp;·&nbsp; v2.6</div>
       <span class="lic-label">LICENSE KEY</span>
       <input class="lic-input" id="licInput" type="text" placeholder="KUNI-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
       <button class="lic-btn" id="licBtn" onclick="doLogin()">Verify License</button>
@@ -710,7 +1064,7 @@ function showLicenseScreen() {
           </a>
         </div>
       </div>
-      <div class="lic-footer"><span><span class="lic-dot" id="connDot"></span>kuni tool</span><span>v2.4</span></div>
+      <div class="lic-footer"><span><span class="lic-dot" id="connDot"></span>kuni tool</span><span>v2.6</span></div>
     </div></div>`;
   document.getElementById('licInput').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 }
@@ -740,7 +1094,7 @@ function showMainApp() {
         <div><div class="hdr-logo">KUNI</div><div class="hdr-sub">AUTO SB GEN</div></div>
         <div class="hdr-right">
           <span class="plan-badge">${planLabel}</span>${licenseInfo&&licenseInfo.is_trial?'<span class="trial-badge">TRIAL</span>':''}
-          <div class="hdr-ver">v2.4</div>
+          <div class="hdr-ver">v2.6</div>
         </div>
       </div>
       <div class="status-bar idle" id="statusBar"><span class="dot"></span><span class="status-text" id="statusText">idle — ready</span></div>
@@ -777,7 +1131,7 @@ function showMainApp() {
         <div class="log-header"><span>LOG OUTPUT</span><button class="log-clear" onclick="clearLog()">clear</button></div>
         <div class="log-box" id="logBox"></div>
       </div>
-      <div class="footer"><span>kuni tool</span><a href="#" onclick="doLogout();return false;">logout</a></div>
+      <div class="footer"><span>kuni tool · v2.6</span><a href="#" onclick="doLogout();return false;">logout</a></div>
     </div>`;
   loadSavedConfig(); updateLimitBar(); initSocket();
 }
@@ -843,7 +1197,16 @@ function initSocket(){
       const txt=document.getElementById('limitText');if(txt)txt.textContent=`${used} / ${licenseInfo.limit} (${Math.max(0,100-pct)}% left)`;
     }
   });
-  socket.on('log',d=>{const box=document.getElementById('logBox');if(!box)return;const line=document.createElement('div');line.className='log-line '+(d.tag||'dim');const msg=d.msg||'';const m=msg.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)/s);if(m)line.innerHTML=`<span class="log-ts">${m[1]}</span><span class="log-msg">${m[2]}</span>`;else line.innerHTML=`<span class="log-msg">${msg}</span>`;box.appendChild(line);box.scrollTop=box.scrollHeight;});
+  socket.on('log',d=>{
+    const box=document.getElementById('logBox');if(!box)return;
+    const line=document.createElement('div');
+    line.className='log-line '+(d.tag||'dim');
+    const msg=d.msg||'';
+    const m=msg.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)/s);
+    if(m)line.innerHTML=`<span class="log-ts">${m[1]}</span><span class="log-msg">${m[2]}</span>`;
+    else line.innerHTML=`<span class="log-msg">${msg}</span>`;
+    box.appendChild(line);box.scrollTop=box.scrollHeight;
+  });
   socket.on('limit_reached',d=>{running=false;showLimitReached(d.used,d.limit);});
 }
 
@@ -857,15 +1220,15 @@ if(savedKey){
 }else{showLicenseScreen();}
 </script>
 </body>
-</html>
-"""
+</html>"""
 
 
 @app.route("/")
 def index():
     return HTML
 
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"\n[KUNI] v2.5 FINAL running on http://localhost:{port}\n")
+    print(f"\n[KUNI] v2.6 running on http://localhost:{port}\n")
     socketio.run(app, host="0.0.0.0", port=port, debug=False)
