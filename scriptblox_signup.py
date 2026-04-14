@@ -105,10 +105,11 @@ def mw_get_email(cookies, csrf):
     return None, csrf
 
 # ── MailWave inbox polling ────────────────────────────────────────────────────
-def mw_poll_code(cookies, csrf, timeout=90):
-    """Poll MailWave inbox for ScriptBlox 7-digit verification code."""
+def mw_poll_code(cookies, csrf, email_addr, timeout=90):
+    """Poll MailWave inbox for ScriptBlox 7-digit verification code for specific email."""
     import time as _t
     deadline = _t.time() + timeout
+    seen_ids = set()
     while _t.time() < deadline:
         try:
             tok = unquote(cookies.get("XSRF-TOKEN", csrf))
@@ -117,28 +118,27 @@ def mw_poll_code(cookies, csrf, timeout=90):
                 cookies=cookies, proxies=NO_PROXY, timeout=15)
             data = r.json()
             messages = data.get("messages", [])
+            # Sort by receivedAt descending to get latest first
+            messages = sorted(messages, key=lambda m: m.get("receivedAt",""), reverse=True)
             for msg in messages:
-                # Try all possible content fields
+                msg_id = msg.get("id","")
+                # Only check messages from ScriptBlox
+                sender = msg.get("from_email","") + msg.get("from","")
+                if "scriptblox" not in sender.lower():
+                    continue
                 content = (
                     msg.get("content") or
                     msg.get("html") or
-                    msg.get("body") or
-                    msg.get("text") or ""
+                    msg.get("body") or ""
                 )
                 if isinstance(content, bool):
                     content = ""
                 content = str(content)
-                # Look for 7-digit code (ScriptBlox sends a numeric code)
+                # Look for 7-digit code
                 match = re.search(r"\b(\d{7})\b", content)
                 if match:
                     code = match.group(1)
-                    print(f"[poll] found code: {code}")
-                    return code
-                # Fallback: any 6-7 digit number
-                match2 = re.search(r"\b(\d{6,7})\b", content)
-                if match2:
-                    code = match2.group(1)
-                    print(f"[poll] found code (fallback): {code}")
+                    print(f"[poll] found code: {code} in msg {msg_id}")
                     return code
         except Exception as e:
             print(f"[poll] error: {e}")
@@ -335,7 +335,7 @@ def create_account(slot):
     log_emit(f"[#{slot}] [✓] Waiting for verification email...", "dim")
 
     # ── Step 2: Poll inbox for 7-digit code ──────────────────────────────────
-    verify_code = mw_poll_code(mw_cookies, mw_csrf, timeout=90)
+    verify_code = mw_poll_code(mw_cookies, mw_csrf, email_addr, timeout=90)
 
     verified = False
     if verify_code:
