@@ -107,8 +107,9 @@ def mw_get_email(cookies, csrf):
 # ── MailWave inbox polling ────────────────────────────────────────────────────
 def mw_poll_inbox(cookies, csrf, timeout=90):
     """Poll MailWave inbox until verification email arrives. Returns verify URL or None."""
-    deadline = __import__('time').time() + timeout
-    while __import__('time').time() < deadline:
+    import time as _t
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
         try:
             tok = unquote(cookies.get("XSRF-TOKEN", csrf))
             r = requests.post(f"{MW_BASE}/get_messages",
@@ -117,18 +118,25 @@ def mw_poll_inbox(cookies, csrf, timeout=90):
             data = r.json()
             messages = data.get("messages", [])
             for msg in messages:
-                body = msg.get("body", "") + msg.get("html", "")
-                # Find verification link
-                match = re.search(r"https://scriptblox\.com/[\w/?=&%+\-_.]+verify[\w/?=&%+\-_.]+", body)
+                # html field may be escaped JSON string or raw HTML
+                raw = msg.get("html", "") or msg.get("body", "")
+                if isinstance(raw, bool):
+                    raw = ""
+                # Unescape if needed
+                body = raw.replace("\n", "").replace("\t", "").replace("\r", "")
+                # Find scriptblox verify link
+                match = re.search("https?://scriptblox\.com/[\w/?=&%+\-_.#]+", body)
                 if match:
-                    return match.group(0)
-                # Also try token-only
-                match2 = re.search(r'[?&]token=([A-Za-z0-9_\-]+)', body)
+                    url = match.group(0).rstrip(".,;)")
+                    return url
+                # Try token param anywhere
+                match2 = re.search(r'token=([A-Za-z0-9_\-%.]+)', body)
                 if match2:
-                    return f"https://scriptblox.com/api/auth/verify-email?token={match2.group(1)}"
-        except:
-            pass
-        __import__('time').sleep(3)
+                    token = unquote(match2.group(1))
+                    return f"https://scriptblox.com/api/auth/verify-email?token={token}"
+        except Exception as e:
+            print(f"[poll] error: {e}")
+        _t.sleep(3)
     return None
 
 # ── ScriptBlox login to get cookies ──────────────────────────────────────────
@@ -204,25 +212,25 @@ def send_webhook(username, password, email, cookies_json=None, verified=False):
         from datetime import timedelta
         post_date = datetime.now(timezone.utc) + timedelta(days=7)
         can_post = post_date.strftime("%A, %B %-d, %Y at %I:%M %p") if verified else "—"
-        fields = [
-            {"name": "👤 Username", "value": f"```{username}```", "inline": True},
-            {"name": "🔑 Password", "value": f"```{password}```", "inline": True},
-            {"name": "📅 Can post in", "value": can_post, "inline": False},
-        ]
-
-        # Upload cookies online
+        # Upload cookies online first
         online_url = None
         if cookies_json:
             online_url = upload_cookies_online(cookies_json)
+
+        # Build description like image
+        desc_lines = []
+        if verified:
+            desc_lines.append(f"\U0001f4c5 **Can post after:** {can_post}")
         if online_url:
-            fields.append({"name": "🔗 Cookies online", "value": online_url, "inline": False})
+            desc_lines.append(f"\U0001f517 **Cookies online:** {online_url}")
         if cookies_json:
-            fields.append({"name": "📎 Cookies attached as file below (import into Cookie-Editor):", "value": "\u200b", "inline": False})
+            desc_lines.append(f"\U0001f4ce Import `cookies.json` into Cookie-Editor:")
+        description = "\n".join(desc_lines)
 
         embed = {
-            "title": "✅ ScriptBlox Account Generated" if verified else "🎯 New Account Generated",
+            "title": "\u2705 ScriptBlox Account Ready!" if verified else "\U0001f3af ScriptBlox Account Generated",
             "color": 0x00e87a if verified else 0x00ffcc,
-            "fields": fields,
+            "description": description,
             "footer": {"text": "sblox gen"},
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
