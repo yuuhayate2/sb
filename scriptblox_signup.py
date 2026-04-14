@@ -106,38 +106,41 @@ def mw_get_email(cookies, csrf):
 
 # ── MailWave inbox polling ────────────────────────────────────────────────────
 def mw_poll_code(cookies, csrf, email_addr, timeout=90):
-    """Poll MailWave for a NEW ScriptBlox 7-digit code — ignores old messages."""
+    """Poll MailWave for a NEW ScriptBlox 7-digit code — ignores pre-existing messages."""
     import time as _t
-    deadline = _t.time() + timeout
-    signup_time = datetime.now(timezone.utc)
-    seen_codes = set()
 
+    # Snapshot existing message IDs before signup
+    existing_ids = set()
+    try:
+        tok = unquote(cookies.get("XSRF-TOKEN", csrf))
+        r = requests.post(f"{MW_BASE}/get_messages",
+            headers={"Content-Type": "application/json", "X-CSRF-TOKEN": tok},
+            cookies=cookies, proxies=NO_PROXY, timeout=15)
+        for msg in r.json().get("messages", []):
+            existing_ids.add(msg.get("id",""))
+        print(f"[poll] existing msg IDs: {existing_ids}")
+    except Exception as e:
+        print(f"[poll] snapshot error: {e}")
+
+    deadline = _t.time() + timeout
     while _t.time() < deadline:
         try:
             tok = unquote(cookies.get("XSRF-TOKEN", csrf))
             r = requests.post(f"{MW_BASE}/get_messages",
                 headers={"Content-Type": "application/json", "X-CSRF-TOKEN": tok},
                 cookies=cookies, proxies=NO_PROXY, timeout=15)
-            data = r.json()
-            messages = data.get("messages", [])
+            messages = r.json().get("messages", [])
+            print(f"[poll] {len(messages)} total messages, {len(existing_ids)} existing")
 
             for msg in messages:
+                msg_id = msg.get("id", "")
+                # Skip pre-existing messages
+                if msg_id in existing_ids:
+                    continue
                 # Only from ScriptBlox
                 sender = (msg.get("from_email","") + msg.get("from","")).lower()
                 if "scriptblox" not in sender:
                     continue
-
-                # Only messages received AFTER signup
-                received = msg.get("receivedAt","")
-                if received:
-                    try:
-                        from datetime import datetime as dt
-                        # parse ISO format
-                        msg_time = dt.fromisoformat(received.replace("Z","+00:00"))
-                        if msg_time < signup_time:
-                            continue  # skip old messages
-                    except:
-                        pass
 
                 content = msg.get("content") or msg.get("html") or msg.get("body") or ""
                 if isinstance(content, bool):
@@ -147,10 +150,9 @@ def mw_poll_code(cookies, csrf, email_addr, timeout=90):
                 match = re.search(r"\b(\d{7})\b", content)
                 if match:
                     code = match.group(1)
-                    if code not in seen_codes:
-                        seen_codes.add(code)
-                        print(f"[poll] new code found: {code}")
-                        return code
+                    print(f"[poll] found new code: {code}")
+                    return code
+                print(f"[poll] new msg found but no code yet, id={msg_id}")
 
         except Exception as e:
             print(f"[poll] error: {e}")
