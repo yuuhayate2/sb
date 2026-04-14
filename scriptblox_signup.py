@@ -1,4 +1,4 @@
-# scriptblox_signup.py — Kuni Tool · SB Account Generator v2.5
+# scriptblox_signup.py — Kuni Tool · SB Account Generator v2.5 FINAL
 import json, os, random, re, string, threading, hashlib, time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -14,7 +14,6 @@ from proxy_util import load_proxies, get_random_proxy, parse_proxy
 
 load_dotenv()
 
-# ── Config ────────────────────────────────────────────────────────────────────
 SUPABASE_URL = "https://ukwltgxtfikiprsqflhi.supabase.co"
 SUPABASE_KEY = "sb_publishable_NhI5Z-LriMN_huWOV14AtA_YtmDZeQ3"
 
@@ -30,7 +29,6 @@ ACCOUNTS_FILE = Path(__file__).parent / "scriptblox_accounts.txt"
 PROXIES_FILE  = Path(__file__).parent / "proxies.txt"
 WEBHOOK_FILE  = Path(__file__).parent / "webhook.txt"
 
-# ── State ─────────────────────────────────────────────────────────────────────
 proxies_list   = load_proxies()
 active_webhook = WEBHOOK_FILE.read_text().strip() if WEBHOOK_FILE.exists() else ""
 license_valid  = False
@@ -44,7 +42,6 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 state = {"running": False, "created": 0, "active": 0, "failed": 0, "target": 0, "stop": False}
 
-# ── Supabase Helpers ──────────────────────────────────────────────────────────
 def supa_hdrs():
     return {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"}
 
@@ -61,9 +58,9 @@ def increment_used(key):
         rec = fetch_license(key)
         if not rec: return None
         new_val = (rec.get("accounts_used") or 0) + 1
-        r = requests.patch(f"{SUPABASE_URL}/rest/v1/licenses",
-                           headers={**supa_hdrs(), "Prefer": "return=representation"},
-                           params={"license_key": f"eq.{key}"}, json={"accounts_used": new_val})
+        requests.patch(f"{SUPABASE_URL}/rest/v1/licenses",
+                       headers={**supa_hdrs(), "Prefer": "return=representation"},
+                       params={"license_key": f"eq.{key}"}, json={"accounts_used": new_val})
         return new_val
     except:
         return None
@@ -71,7 +68,6 @@ def increment_used(key):
 def get_hwid(ip):
     return hashlib.sha256(ip.encode()).hexdigest()
 
-# ── MailWave ──────────────────────────────────────────────────────────────────
 def mw_create_session():
     for attempt in range(3):
         try:
@@ -112,8 +108,7 @@ def mw_poll_code(mw_sess, csrf, email_addr, timeout=90):
                 if msg_id in seen_ids: continue
                 sender = (str(msg.get("from_email","")) + str(msg.get("from",""))).lower()
                 if "scriptblox" not in sender:
-                    seen_ids.add(msg_id)
-                    continue
+                    seen_ids.add(msg_id); continue
                 content = str(msg.get("content") or msg.get("html") or msg.get("body") or "")
                 match = re.search(r"\b(\d{7})\b", content)
                 if match:
@@ -125,7 +120,6 @@ def mw_poll_code(mw_sess, csrf, email_addr, timeout=90):
         time.sleep(1)
     return None
 
-# ── Utils ─────────────────────────────────────────────────────────────────────
 def sb_headers():
     return {
         "Content-Type": "application/json", "Accept": "application/json",
@@ -204,14 +198,13 @@ def sb_login(email, password, proxy_r):
             cookies_data.append({
                 "domain": "scriptblox.com", "hostOnly": True, "httpOnly": name == "token",
                 "name": name, "path": "/", "sameSite": "strict" if name == "token" else "no_restriction",
-                "secure": True, "session": False, "value": val,
+                "secure": True, "session": False, "storeId": None, "value": val,
                 "expirationDate": time.time() + 86400 * 30
             })
         return cookies_data, None
     except:
         return None, None
 
-# ── Core ──────────────────────────────────────────────────────────────────────
 def create_account(slot):
     global current_key, license_record
     if state["stop"]: return
@@ -262,7 +255,6 @@ def create_account(slot):
         log_emit(f"[#{slot}] Signup failed: {resp.get('message','')}", "err")
         return
 
-    # Set token immediately in session after signup
     if signup_token:
         signup_sess.cookies.set("token", signup_token, domain="scriptblox.com", path="/")
 
@@ -309,7 +301,6 @@ def create_account(slot):
     except Exception as e:
         log_emit(f"[#{slot}] Verify error: {e}", "err")
 
-    # Visit homepage for full cookie set
     if verified:
         log_emit(f"[#{slot}] [✓] Fetching cookies...", "dim")
         try:
@@ -318,7 +309,6 @@ def create_account(slot):
         except:
             pass
 
-    # Extract cookies
     keep = {"token", "__scriptblox_validation", "visitor", "i18n_redirected"}
     cookies_data = []
     for name, value in signup_sess.cookies.items():
@@ -365,6 +355,136 @@ def run_generator(count, concurrent):
     state["running"] = False
     log_emit(f"Done — {state['created']}/{count} accounts created.", "ok")
     socketio.emit("done", {"created": state["created"], "total": count})
+
+@app.route("/verify-key", methods=["POST"])
+def verify():
+    global license_valid, current_key, license_record
+    try:
+        key = (request.json or {}).get("key","").strip()
+        if not key: return jsonify({"valid": False, "error": "no_key"})
+        client_hwid = (request.json or {}).get("hwid", "").strip()
+        hwid = client_hwid if client_hwid else get_hwid(request.remote_addr)
+        rec = fetch_license(key)
+        if not rec: return jsonify({"valid": False, "error": "not_found"})
+        if rec.get("status") != "active": return jsonify({"valid": False, "error": "disabled"})
+        exp = rec.get("expiry_date")
+        if exp and datetime.fromisoformat(exp.replace("Z","")) < datetime.now():
+            return jsonify({"valid": False, "error": "expired"})
+        if rec.get("hwid") and rec["hwid"] != hwid:
+            return jsonify({"valid": False, "error": "hwid_mismatch"})
+        if not rec.get("hwid"):
+            requests.patch(f"{SUPABASE_URL}/rest/v1/licenses", headers=supa_hdrs(),
+                           params={"license_key": f"eq.{key}"}, json={"hwid": hwid})
+        limit = rec.get("accounts_limit", 0)
+        used  = rec.get("accounts_used", 0) or 0
+        if limit < 9999 and used >= limit:
+            return jsonify({"valid": False, "error": "limit_reached", "used": used, "limit": limit})
+        license_valid = True; current_key = key; license_record = rec
+        return jsonify({
+            "valid": True,
+            "plan": "Unlimited" if limit >= 9999 else f"{limit} accounts",
+            "used": used, "limit": limit,
+            "accounts_left": None if limit >= 9999 else (limit - used),
+            "is_trial": rec.get("is_trial", False),
+        })
+    except Exception as e:
+        print("VERIFY ERROR:", e)
+        return jsonify({"valid": False, "error": "server_error"})
+
+@app.route("/set-proxies", methods=["POST"])
+def set_proxies():
+    global proxies_list
+    if not license_valid: return jsonify({"ok": False, "error": "not_authenticated"})
+    try:
+        lines = (request.json or {}).get("proxies","").strip().splitlines()
+        valid = [l.strip() for l in lines if l.strip() and not l.startswith("#") and parse_proxy(l.strip())]
+        PROXIES_FILE.write_text("\n".join(valid))
+        proxies_list = valid
+        return jsonify({"ok": True, "count": len(valid)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/set-webhook", methods=["POST"])
+def set_webhook():
+    global active_webhook
+    if not license_valid: return jsonify({"ok": False, "error": "not_authenticated"})
+    try:
+        wh = (request.json or {}).get("webhook","").strip()
+        if wh and not wh.startswith("https://discord.com/api/webhooks/"):
+            return jsonify({"ok": False, "error": "invalid_webhook"})
+        active_webhook = wh
+        WEBHOOK_FILE.write_text(wh)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/get-proxies", methods=["GET"])
+def get_proxies():
+    if not license_valid: return jsonify({"ok": False})
+    return jsonify({"ok": True, "count": len(proxies_list)})
+
+@app.route("/get-webhook", methods=["GET"])
+def get_webhook():
+    if not license_valid: return jsonify({"ok": False})
+    return jsonify({"ok": True, "has_webhook": bool(active_webhook)})
+
+@app.route("/claim-trial", methods=["POST"])
+def claim_trial():
+    try:
+        client_hwid = (request.json or {}).get("hwid", "").strip()
+        hwid = client_hwid if client_hwid else get_hwid(request.remote_addr)
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/licenses", headers=supa_hdrs(),
+                         params={"hwid": f"eq.{hwid}", "is_trial": "eq.true", "select": "id,license_key"})
+        if r.status_code == 200 and r.json():
+            existing = r.json()[0]
+            return jsonify({"ok": False, "error": "already_claimed", "key": existing["license_key"]})
+        def seg(): return __import__('random').choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=6)
+        key = "TRIAL-" + "".join(seg()) + "-" + "".join(seg()) + "-" + "".join(seg())
+        expiry = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        body = {"license_key": key, "accounts_limit": 1, "accounts_used": 0,
+                "expiry_date": expiry, "status": "active", "is_trial": True, "hwid": hwid, "note": "free trial"}
+        r2 = requests.post(f"{SUPABASE_URL}/rest/v1/licenses",
+                           headers={**supa_hdrs(), "Prefer": "return=representation"}, json=body)
+        if r2.status_code not in (200, 201):
+            return jsonify({"ok": False, "error": "db_error"})
+        return jsonify({"ok": True, "key": key})
+    except Exception as e:
+        print("TRIAL ERROR:", e)
+        return jsonify({"ok": False, "error": "server_error"})
+
+@socketio.on("get_info")
+def on_info():
+    emit("info", {"proxies": len(proxies_list), "webhook": bool(active_webhook)})
+
+@socketio.on("start")
+def on_start(data):
+    global license_record
+    if not license_valid or state["running"]: return
+    if current_key:
+        fresh = fetch_license(current_key)
+        if fresh: license_record = fresh
+    limit = license_record.get("accounts_limit", 0) if license_record else 0
+    used  = (license_record.get("accounts_used") or 0) if license_record else 0
+    if limit < 9999 and used >= limit:
+        emit("limit_reached", {"used": used, "limit": limit}); return
+    count      = int(data.get("count", 10))
+    concurrent = int(data.get("concurrent", 10))
+    if license_record and limit < 9999:
+        remaining = limit - used
+        if count > remaining:
+            count = remaining
+            log_emit(f"Count capped to {remaining} (remaining allowance)", "inf")
+    if count <= 0: emit("limit_reached", {"used": used, "limit": limit}); return
+    state.update(running=True, stop=False, created=0, active=0, failed=0, target=count)
+    emit("started", {"count": count})
+    log_emit(f"Starting {count} accounts ({concurrent} concurrent)...", "inf")
+    threading.Thread(target=run_generator, args=(count, concurrent), daemon=True).start()
+
+@socketio.on("stop")
+def on_stop():
+    state["stop"] = True
+    emit("stopped")
+    log_emit("Stopping...", "inf")
 
 
 HTML = r"""<!DOCTYPE html>
@@ -740,11 +860,12 @@ if(savedKey){
 </html>
 """
 
+
 @app.route("/")
 def index():
     return HTML
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"\n[KUNI] v2.4 running on http://localhost:{port}\n")
+    print(f"\n[KUNI] v2.5 FINAL running on http://localhost:{port}\n")
     socketio.run(app, host="0.0.0.0", port=port, debug=False)
