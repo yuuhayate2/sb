@@ -465,10 +465,7 @@ def create_account(slot):
         if rec and (rec.get("accounts_used") or 0) >= rec.get("accounts_limit", 0):
             state["stop"] = True
             log_emit("Account limit reached — stopping", "err")
-            socketio.emit("limit_reached", {
-                "used":  rec.get("accounts_used"),
-                "limit": rec.get("accounts_limit"),
-            })
+            socketio.emit("limit_reached", {"used": rec.get("accounts_used"), "limit": rec.get("accounts_limit")})
             return
 
     username = rand_username()
@@ -477,14 +474,14 @@ def create_account(slot):
 
     log_emit(f"[#{slot}] [✓] Starting...", "dim")
 
-    # ── Step 1: DisMail session ───────────────────────────────────────────────
+    # STEP 1-2: Create DisMail email
     dm_uid, email_addr = dm_create_email()
     if not email_addr:
         state["failed"] += 1
         log_emit(f"[#{slot}] DisMail create failed", "err")
         return
 
-    # ── Step 2: Turnstile captcha ─────────────────────────────────────────────
+    # STEP 3-4: Solve Turnstile + Sign Up
     log_emit(f"[#{slot}] [✓] Solving Turnstile captcha...", "dim")
     captcha = solve_turnstile_capsolver()
     if not captcha:
@@ -492,14 +489,13 @@ def create_account(slot):
         log_emit(f"[#{slot}] Captcha failed", "err")
         return
 
-    # ── Step 3: Signup ────────────────────────────────────────────────────────
     log_emit(f"[#{slot}] [✓] Creating account...", "dim")
-    signup_sess = requests.Session()
-    signup_sess.headers.update(sb_headers())
+    sess = requests.Session()
+    sess.headers.update(sb_headers())
 
     signup_token = ""
     try:
-        r = signup_sess.post(SB_SIGNUP, json={
+        r = sess.post(SB_SIGNUP, json={
             "email":          email_addr,
             "username":       username,
             "password":       password,
@@ -515,140 +511,98 @@ def create_account(slot):
         log_emit(f"[#{slot}] Signup error: {e}", "err")
         return
 
-    # check for API-level error
     if resp.get("error") or (isinstance(resp.get("statusCode"), int) and resp["statusCode"] >= 400):
         state["failed"] += 1
         log_emit(f"[#{slot}] Signup rejected: {resp.get('message', '')}", "err")
         return
 
     if signup_token:
-        signup_sess.cookies.set("token", signup_token, domain="scriptblox.com", path="/")
+        sess.cookies.set("token", signup_token, domain="scriptblox.com", path="/")
 
-    # ── Step 4: Poll verification code ───────────────────────────────────────
+    # STEP 5: Redirect to verify page
     log_emit(f"[#{slot}] [✓] Navigating to verification...", "dim")
-    # visit verify page with signup session to get Cloudflare clearance
     try:
-        signup_sess.get("https://scriptblox.com/verify?redirect=/",
-                        proxies=proxy_r, timeout=15, verify=False)
+        sess.get("https://scriptblox.com/verify?redirect=/", proxies=proxy_r, timeout=15, verify=False)
         time.sleep(1)
     except:
         pass
-    log_emit(f"[#{slot}] [✓] Waiting for verification email...", "dim")
 
+    # STEP 6: Poll DisMail for verification code
+    log_emit(f"[#{slot}] [✓] Waiting for verification email...", "dim")
     verify_code = dm_poll_code(dm_uid, timeout=90)
 
     if not verify_code:
-        # save unverified — no token yet, fallback login
-        log_emit(f"[#{slot}] Code timeout — attempting fallback login", "dim")
-        login_token, cookies_data = _do_login(email_addr, password, proxy_r)
-        if not login_token:
-            log_emit(f"[#{slot}] Fallback login failed — saving unverified without cookies", "warn")
-            cookies_data = None
-        else:
-            cookies_data = fabricate_full_cookies(login_token, username, verified=False)
-
+        log_emit(f"[#{slot}] Code timeout — saving unverified", "warn")
+        cookies_data = fabricate_full_cookies(signup_token, username, verified=False) if signup_token else None
         with session_lock:
             increment_used(current_key)
         _save_and_send(slot, username, password, email_addr, cookies_data, verified=False)
         return
 
-    # ── Step 5: Submit verification code (using same signup session) ─────────
+    # STEP 7: Enter code + press Verify
     log_emit(f"[#{slot}] [✓] Entering verification code...", "dim")
 
     verified    = False
     final_token = signup_token
+    visitor_val = _rand_visitor()
+    now         = int(time.time())
+    creation    = now - 86400
+
+    # inject all cookies exactly like browser
+    cookie_map = {
+        "i18n_redirected":          ("scriptblox.com",  "en"),
+        "__scriptblox_validation":  ("scriptblox.com",  _rand_validation_token()),
+        "__scriptblox_ua_":         ("scriptblox.com",  _rand_ua_cookie()),
+        "visitor":                  ("scriptblox.com",  visitor_val),
+        "_ga":                      (".scriptblox.com", _rand_ga_id()),
+        "_gid":                     (".scriptblox.com", _rand_gid()),
+        "_ga_6BWTBXZCLM":           (".scriptblox.com", _rand_ga6()),
+        "_gat_gtag_UA_213829520_1": (".scriptblox.com", "1"),
+        "__gads":                   (".scriptblox.com", _rand_gads()),
+        "__gpi":                    (".scriptblox.com", _rand_gpi()),
+        "__eoi":                    (".scriptblox.com", _rand_eoi()),
+        "FCNEC":                    (".scriptblox.com", _rand_fcnec()),
+        "FCCDCF":                   (".scriptblox.com", _rand_fccdcf(creation)),
+        "token":                    ("scriptblox.com",  signup_token or ""),
+    }
+    for name, (domain, value) in cookie_map.items():
+        if value:
+            sess.cookies.set(name, value, domain=domain, path="/")
+
+    sess.headers.update(sb_headers(referer="https://scriptblox.com/verify?redirect=/"))
+    sess.headers["Authorization"] = f"Bearer {signup_token}"
+    sess.headers["X-Visitor"]     = visitor_val
 
     try:
-        # visit /verify page first to establish session state (like browser does)
-        if signup_token:
-            signup_sess.cookies.set("token", signup_token, domain="scriptblox.com", path="/")
-        try:
-            signup_sess.get("https://scriptblox.com/verify",
-                           proxies=proxy_r, timeout=15, verify=False)
-        except:
-            pass
-
-        # Inject all required cookies into session before verify (mimicking browser)
-        now = int(time.time())
-        creation = now - 86400
-        visitor_val = _rand_visitor()
-
-        cookie_map = {
-            "i18n_redirected":          ("scriptblox.com",  "en"),
-            "__scriptblox_validation":  ("scriptblox.com",  _rand_validation_token()),
-            "__scriptblox_ua_":         ("scriptblox.com",  _rand_ua_cookie()),
-            "visitor":                  ("scriptblox.com",  visitor_val),
-            "_ga":                      (".scriptblox.com", _rand_ga_id()),
-            "_gid":                     (".scriptblox.com", _rand_gid()),
-            "_ga_6BWTBXZCLM":           (".scriptblox.com", _rand_ga6()),
-            "_gat_gtag_UA_213829520_1": (".scriptblox.com", "1"),
-            "__gads":                   (".scriptblox.com", _rand_gads()),
-            "__gpi":                    (".scriptblox.com", _rand_gpi()),
-            "__eoi":                    (".scriptblox.com", _rand_eoi()),
-            "FCNEC":                    (".scriptblox.com", _rand_fcnec()),
-            "FCCDCF":                   (".scriptblox.com", _rand_fccdcf(creation)),
-            "token":                    ("scriptblox.com",  signup_token or ""),
-        }
-        for name, (domain, value) in cookie_map.items():
-            if value:
-                signup_sess.cookies.set(name, value, domain=domain, path="/")
-
-        signup_sess.headers.update(sb_headers(referer="https://scriptblox.com/verify?redirect=/"))
-        if signup_token:
-            signup_sess.headers["Authorization"] = f"Bearer {signup_token}"
-        signup_sess.headers["X-Visitor"] = visitor_val
-
-        vr = signup_sess.post(SB_VERIFY,
-                              json={"vCode": int(verify_code)},
-                              proxies=proxy_r, timeout=25, verify=False)
-
-        print(f"[verify #{slot}] status={vr.status_code} body={vr.text[:300]}")
-
+        vr    = sess.post(SB_VERIFY, json={"vCode": int(verify_code)}, proxies=proxy_r, timeout=25, verify=False)
         vdata = vr.json() if vr.content else {}
+        print(f"[verify #{slot}] status={vr.status_code} body={vr.text[:200]}")
 
-        # SB verify success: token comes back in Set-Cookie header, not body
-        # body is just {"message": false}
         if vr.status_code == 200 and vdata.get("message") is False:
-            # get token from Set-Cookie response header
-            new_tok = signup_sess.cookies.get("token", "")
+            verified = True
+            # get new verified token from response body or Set-Cookie
+            new_tok = vdata.get("token", "")
             if not new_tok:
-                # fallback: parse Set-Cookie header directly
-                set_cookie = vr.headers.get("set-cookie", "")
-                import re as _re
-                m = _re.search(r'token=([^;]+)', set_cookie)
-                if m:
-                    new_tok = m.group(1)
+                sc = vr.headers.get("set-cookie", "")
+                m  = re.search(r"token=([^;]+)", sc)
+                if m: new_tok = m.group(1)
             if new_tok:
                 final_token = new_tok
-            verified = True
-            print(f"[verify #{slot}] SUCCESS! token={'YES' if new_tok else 'NO'}")
+                sess.cookies.set("token", new_tok, domain="scriptblox.com", path="/")
+            print(f"[verify #{slot}] VERIFIED! token={'YES' if new_tok else 'using signup token'}")
 
     except Exception as e:
         log_emit(f"[#{slot}] Verify error: {e}", "err")
 
-    # ── Step 6: Get cookies from session after verify ────────────────────────
+    # STEP 8-9: Visit homepage (showWelcome)
     log_emit(f"[#{slot}] [✓] Fetching cookies...", "dim")
-
     if verified:
-        # visit home so SB sets all cookies (same as browser redirect after verify)
         try:
-            signup_sess.get(SB_HOME, proxies=proxy_r, timeout=15, verify=False)
+            sess.get(f"{SB_HOME}?showWelcome=true", proxies=proxy_r, timeout=15, verify=False)
         except:
             pass
 
-    # extract real cookies from session
-    KEEP = {"token", "__scriptblox_validation", "__scriptblox_ua_", "visitor", "i18n_redirected"}
-    raw_cookies = {}
-    for c in signup_sess.cookies:
-        raw_cookies[c.name] = c
-
-    real_token = raw_cookies.get("token")
-    if real_token:
-        final_token = real_token.value
-    elif not final_token:
-        final_token = signup_token or ""
-
-    # fabricate full set using real token
+    # STEP 10: Fabricate full cookie set using verified token
     cookies_data = fabricate_full_cookies(final_token, username, verified=verified) if final_token else None
 
     with session_lock:
