@@ -22,8 +22,8 @@ SB_VERIFY = "https://scriptblox.com/api/auth/verify"
 SB_LOGIN  = "https://scriptblox.com/api/auth/login"
 SB_HOME   = "https://scriptblox.com/"
 
-MW_BASE   = "https://mailwave.dev"
-MW_DOMAIN = "aula.edu.pl"
+DM_BASE   = "https://dismail.top"
+DM_DOMAIN = "dismail.top"
 
 NO_PROXY      = {"http": None, "https": None}
 ACCOUNTS_FILE = Path(__file__).parent / "scriptblox_accounts.txt"
@@ -73,79 +73,62 @@ def get_hwid(ip):
 
 # ─── MailWave helpers ────────────────────────────────────────────────────────
 
-def mw_create_session():
+def dm_create_email():
+    """Create a disposable email via DisMail API."""
     for attempt in range(3):
         try:
-            sess = requests.Session()
-            sess.proxies = NO_PROXY
-            r = sess.get(f"{MW_BASE}/", timeout=15)
-            token = re.search(r'<meta name="csrf-token" content="([^"]+)"', r.text)
-            csrf = token.group(1) if token else None
-            if not csrf:
-                continue
-            for _ in range(20):
-                alias = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-                try:
-                    sess.post(f"{MW_BASE}/change",
-                              data={"_token": csrf, "name": alias, "domain": MW_DOMAIN},
-                              timeout=15)
-                    csrf = unquote(sess.cookies.get("XSRF-TOKEN", csrf))
-                    r3 = sess.post(f"{MW_BASE}/get_messages",
-                                   headers={"Content-Type": "application/json",
-                                            "X-CSRF-TOKEN": csrf},
-                                   timeout=15)
-                    mailbox = r3.json().get("mailbox", "")
-                    if MW_DOMAIN in mailbox:
-                        print(f"[mw] session ready: {mailbox}")
-                        return sess, csrf, mailbox
-                except:
-                    pass
+            alias = "kuni" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            r = requests.post(f"{DM_BASE}/api/create-custom-email",
+                              json={"username": alias},
+                              timeout=15, proxies=NO_PROXY)
+            data = r.json()
+            if data.get("success"):
+                email = data.get("email", "")
+                uid   = data.get("id", alias)
+                print(f"[dm] email ready: {email}")
+                return uid, email
         except Exception as e:
-            print(f"[mw] session error (attempt {attempt+1}): {e}")
-    return None, None, None
+            print(f"[dm] create error (attempt {attempt+1}): {e}")
+    return None, None
 
-def mw_get_existing_ids(mw_sess, csrf):
-    """Get all existing message IDs before signup to avoid picking up old emails."""
-    try:
-        fresh_csrf = unquote(mw_sess.cookies.get("XSRF-TOKEN", csrf))
-        r = mw_sess.post(f"{MW_BASE}/get_messages",
-                         headers={"Content-Type": "application/json",
-                                  "X-CSRF-TOKEN": fresh_csrf},
-                         timeout=15)
-        messages = r.json().get("messages", [])
-        return {msg.get("id", "") for msg in messages}
-    except:
-        return set()
-
-def mw_poll_code(mw_sess, csrf, timeout=90, pre_seen=None):
+def dm_poll_code(uid, timeout=90):
+    """Poll DisMail inbox for ScriptBlox verification code."""
     deadline = time.time() + timeout
-    seen_ids = pre_seen or set()
+    seen_ids  = set()
+
+    # pre-populate seen_ids with existing messages
+    try:
+        r = requests.get(f"{DM_BASE}/api/check-inbox/{uid}",
+                         timeout=15, proxies=NO_PROXY)
+        for msg in r.json().get("messages", []):
+            seen_ids.add(msg.get("id", ""))
+    except:
+        pass
+
     while time.time() < deadline:
         try:
-            fresh_csrf = unquote(mw_sess.cookies.get("XSRF-TOKEN", csrf))
-            r = mw_sess.post(f"{MW_BASE}/get_messages",
-                             headers={"Content-Type": "application/json",
-                                      "X-CSRF-TOKEN": fresh_csrf},
-                             timeout=15)
+            r = requests.get(f"{DM_BASE}/api/check-inbox/{uid}",
+                             timeout=15, proxies=NO_PROXY)
             messages = r.json().get("messages", [])
             for msg in messages:
                 msg_id = msg.get("id", "")
                 if msg_id in seen_ids:
                     continue
-                sender = (str(msg.get("from_email", "")) + str(msg.get("from", ""))).lower()
+                sender = str(msg.get("sender", "")).lower()
                 if "scriptblox" not in sender:
                     seen_ids.add(msg_id)
                     continue
-                content = str(msg.get("content") or msg.get("html") or msg.get("body") or "")
-                match = re.search(r"\b(\d{7})\b", content)
+                content = str(msg.get("body_html") or msg.get("body_text") or "")
+                match = re.search(r"(\d{7})", content)
                 if match:
-                    print(f"[poll] code found: {match.group(1)}")
+                    print(f"[dm] code found: {match.group(1)}")
                     return match.group(1)
                 seen_ids.add(msg_id)
-        except:
-            pass
-        time.sleep(1)
+        except Exception as e:
+            print(f"[dm] poll error: {e}")
+        time.sleep(2)
     return None
+
 
 # ─── Cookie fabrication ──────────────────────────────────────────────────────
 
@@ -493,16 +476,12 @@ def create_account(slot):
 
     log_emit(f"[#{slot}] [✓] Starting...", "dim")
 
-    # ── Step 1: MailWave session ──────────────────────────────────────────────
-    mw_sess, mw_csrf, email_addr = mw_create_session()
+    # ── Step 1: DisMail session ───────────────────────────────────────────────
+    dm_uid, email_addr = dm_create_email()
     if not email_addr:
         state["failed"] += 1
-        log_emit(f"[#{slot}] MailWave session failed", "err")
+        log_emit(f"[#{slot}] DisMail create failed", "err")
         return
-
-    # ── Step 1b: Pre-capture existing message IDs to avoid old emails ───────
-    pre_seen = mw_get_existing_ids(mw_sess, mw_csrf)
-    print(f"[mw] pre-existing messages: {len(pre_seen)}")
 
     # ── Step 2: Turnstile captcha ─────────────────────────────────────────────
     log_emit(f"[#{slot}] [✓] Solving Turnstile captcha...", "dim")
@@ -546,9 +525,16 @@ def create_account(slot):
 
     # ── Step 4: Poll verification code ───────────────────────────────────────
     log_emit(f"[#{slot}] [✓] Navigating to verification...", "dim")
+    # visit verify page with signup session to get Cloudflare clearance
+    try:
+        signup_sess.get("https://scriptblox.com/verify?redirect=/",
+                        proxies=proxy_r, timeout=15, verify=False)
+        time.sleep(1)
+    except:
+        pass
     log_emit(f"[#{slot}] [✓] Waiting for verification email...", "dim")
 
-    verify_code = mw_poll_code(mw_sess, mw_csrf, timeout=90, pre_seen=pre_seen)
+    verify_code = dm_poll_code(dm_uid, timeout=90)
 
     if not verify_code:
         # save unverified — no token yet, fallback login
