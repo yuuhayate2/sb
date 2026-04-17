@@ -25,10 +25,10 @@ urllib3.disable_warnings()
 
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
-from flask_socketio import SocketIO, emit, disconnect
+from flask_socketio import SocketIO, emit
 
 from turnstile_solver import solve_turnstile_capsolver
-from proxy_util import load_proxies, get_random_proxy, parse_proxy
+from proxy_util import get_random_proxy, parse_proxy
 
 load_dotenv()
 
@@ -373,26 +373,50 @@ def mw_poll_code(cookies, csrf, timeout=120, poll_interval=3):
     return None
 
 # ── ScriptBlox verify + login ─────────────────────────────────────────────────
-def sb_verify_account(code, token_value, proxy_r=None):
-    """Submit vCode to SB. Returns (response, verified_bool)."""
+def sb_verify_account(code, token_value, proxy_r=None, visitor_id=None):
+    """Submit vCode to SB — mirrors browser flow exactly.
+    Returns (response, verified_bool, new_token)."""
     try:
-        hdrs = sb_headers()
-        hdrs["Referer"] = "https://scriptblox.com/verify"
-        hdrs["Authorization"] = f"Bearer {token_value}"
+        # Use/generate visitor ID (browser keeps it consistent)
+        if not visitor_id:
+            visitor_id = hashlib.md5(f"{time.time()}{random.random()}".encode()).hexdigest()
+
+        hdrs = {
+            "Content-Type":  "application/json",
+            "Accept":        "application/json",
+            "Origin":        "https://scriptblox.com",
+            "Referer":       "https://scriptblox.com/verify?redirect=/",
+            "User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+            # Critical: NO "Bearer " prefix — browser sends raw JWT
+            "Authorization": token_value,
+            # Browser sends this header mirroring the visitor cookie
+            "x-visitor":     visitor_id,
+        }
+        cookies = {
+            "token":   token_value,
+            "visitor": visitor_id,
+        }
         r = requests.post(SB_VERIFY,
                           json={"vCode": int(code)},
                           headers=hdrs,
-                          cookies={"token": token_value},
+                          cookies=cookies,
                           proxies=proxy_r, timeout=25, verify=False)
-        data = r.json() if r.content else {}
-        # SB returns message:false on success
+        try:
+            data = r.json() if r.content else {}
+        except:
+            data = {}
+
+        print(f"[sb_verify] status={r.status_code} body={str(data)[:200]}")
+
+        # SB returns {"message": false, "token": "..."} on success
         if r.status_code == 200 and data.get("message") is False:
             new_tok = data.get("token", "")
             if not new_tok:
+                # Fallback: parse from Set-Cookie header
                 sc = r.headers.get("set-cookie", "")
                 m  = re.search(r"token=([^;]+)", sc)
                 if m: new_tok = m.group(1)
-            return r, True, new_tok or token_value
+            return r, True, (new_tok or token_value)
         return r, False, token_value
     except Exception as e:
         print(f"[sb_verify] error: {e}")
@@ -455,16 +479,17 @@ def _rand_visitor():
 def _rand_ua_cookie():
     return quote("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 
-def fabricate_full_cookies(token_value, username, verified=True):
+def fabricate_full_cookies(token_value, username, verified=True, visitor_id=None):
     """Build full browser-like cookie set matching Cookie-Editor export format."""
     now      = int(time.time())
     creation = now - random.randint(3600, 86400 * 7)
+    visitor  = visitor_id or _rand_visitor()
     return [
         {"domain":"scriptblox.com","expirationDate":now+3600,"hostOnly":True,"httpOnly":False,
          "name":"__scriptblox_ua_","path":"/","sameSite":"no_restriction","secure":True,
          "session":False,"storeId":None,"value":_rand_ua_cookie()},
         {"domain":"scriptblox.com","hostOnly":True,"httpOnly":False,"name":"visitor","path":"/",
-         "sameSite":None,"secure":False,"session":True,"storeId":None,"value":_rand_visitor()},
+         "sameSite":None,"secure":False,"session":True,"storeId":None,"value":visitor},
         {"domain":"scriptblox.com","expirationDate":creation+86400*365,"hostOnly":True,"httpOnly":False,
          "name":"i18n_redirected","path":"/","sameSite":"lax","secure":False,"session":False,
          "storeId":None,"value":"en"},
@@ -747,7 +772,9 @@ def create_account(sess_token, slot):
     proxy_r     = proxy_to_requests(proxy)
     webhook_url = sess["webhook"]
 
-    proxy_label = "direct (no proxy)" if not proxy_r else list(proxy_r.values())[0][:60]
+    # Generate visitor ID once — used consistently across signup, verify, and cookie fabrication
+    visitor_id = hashlib.md5(f"{time.time()}{random.random()}{slot}".encode()).hexdigest()
+
     log_emit(sess_token, f"[#{slot}] creating email + solving captcha...", "dim")
     print(f"[#{slot}] proxies_count={len(sess['proxies'])} selected={proxy} proxy_r={proxy_r}")
 
@@ -768,11 +795,14 @@ def create_account(sess_token, slot):
 
     signup_token = ""
     try:
+        signup_hdrs = sb_headers()
+        signup_hdrs["x-visitor"] = visitor_id
         r = requests.post(SB_SIGNUP, json={
             "email": email_addr, "username": username,
             "password": password, "repeatPassword": password,
             "terms": True, "captcha": captcha,
-        }, headers=sb_headers(), proxies=proxy_r, timeout=30, verify=False)
+        }, headers=signup_hdrs, cookies={"visitor": visitor_id},
+           proxies=proxy_r, timeout=30, verify=False)
         resp = r.json() if r.content else {}
         # Debug: log response structure so we can see where token lives
         resp_keys = list(resp.keys()) if isinstance(resp, dict) else str(type(resp))
@@ -835,15 +865,18 @@ def create_account(sess_token, slot):
 
     if verify_code:
         log_emit(sess_token, f"[#{slot}] submitting code {verify_code}...", "dim")
-        _vr, ok, new_tok = sb_verify_account(verify_code, signup_token, proxy_r)
+        _vr, ok, new_tok = sb_verify_account(verify_code, signup_token, proxy_r, visitor_id)
         if ok:
             verified = True
             final_token = new_tok
             log_emit(sess_token, f"[#{slot}] account verified!", "dim")
             # Visit homepage like browser does after verify
             try:
+                home_hdrs = sb_headers()
+                home_hdrs["x-visitor"] = visitor_id
                 requests.get(f"{SB_HOME}?showWelcome=true",
-                             cookies={"token": final_token}, headers=sb_headers(),
+                             cookies={"token": final_token, "visitor": visitor_id},
+                             headers=home_hdrs,
                              proxies=proxy_r, timeout=15, verify=False)
             except: pass
         else:
@@ -854,7 +887,7 @@ def create_account(sess_token, slot):
     verify_status = "verified" if verified else "unverified"
 
     # ── Fabricate full browser-like cookie set ─────────────────────────────────
-    cookies_data = fabricate_full_cookies(final_token, username, verified=verified)
+    cookies_data = fabricate_full_cookies(final_token, username, verified=verified, visitor_id=visitor_id)
     cookies_json_str = json.dumps(cookies_data, indent=2)
     cookies_url = upload_cookies_to_sourcebin(cookies_json_str)
 
