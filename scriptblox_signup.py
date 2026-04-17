@@ -257,117 +257,146 @@ def atomic_increment_used(key, limit):
 
 # ── MailWave helpers (AULA domain) ────────────────────────────────────────────
 def mw_setup():
-    """Initialize MailWave session — fetch CSRF token + cookies."""
+    """Initialize MailWave session — fetch CSRF token + cookies from landing page."""
     try:
-        r = requests.get(f"{MW_BASE}/", proxies=NO_PROXY, timeout=15)
+        r = requests.get(f"{MW_BASE}/", proxies=NO_PROXY, timeout=15,
+                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"})
         token = re.search(r'<meta name="csrf-token" content="([^"]+)"', r.text)
         csrf = token.group(1) if token else None
+        print(f"[mw setup] csrf={csrf[:20] if csrf else 'NONE'}... cookies={list(r.cookies.keys())}")
         return dict(r.cookies), csrf
     except Exception as e:
         print(f"[mw setup] error: {e}")
         return None, None
 
+def mw_headers(csrf):
+    """Browser-exact headers for MailWave API calls."""
+    return {
+        "Accept":        "application/json, text/plain, */*",
+        "Content-Type":  "application/json",
+        "Origin":        "https://mailwave.dev",
+        "Referer":       "https://mailwave.dev/",
+        "User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        "X-CSRF-TOKEN":  csrf,
+        "X-XSRF-TOKEN":  csrf,   # Laravel accepts either — we send both to be safe
+        "X-Requested-With": "XMLHttpRequest",
+    }
+
 def mw_create_email(cookies, csrf):
-    """Create email alias on aula.edu.pl domain. Returns (email, new_csrf)."""
-    if not csrf or cookies is None: return None, csrf
-    for _ in range(20):
+    """Create email alias on aula.edu.pl. Returns (email_addr, new_csrf, cookies)."""
+    if not csrf or cookies is None: return None, csrf, cookies
+    for attempt in range(5):
         alias = "kuni" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
         try:
+            # Step 1: POST /change to create the alias (browser sends form-encoded)
             r = requests.post(f"{MW_BASE}/change",
                               data={"_token": csrf, "name": alias, "domain": MW_DOMAIN},
-                              cookies=cookies, proxies=NO_PROXY, timeout=15)
+                              cookies=cookies, proxies=NO_PROXY, timeout=15,
+                              headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0 Safari/537.36",
+                                       "Referer": "https://mailwave.dev/",
+                                       "Origin":  "https://mailwave.dev"})
             cookies.update(dict(r.cookies))
-            new_csrf = unquote(cookies.get("XSRF-TOKEN", csrf))
+            # XSRF-TOKEN cookie is URL-encoded Laravel format — decode it
+            new_csrf = unquote(cookies.get("XSRF-TOKEN", "")) or csrf
+
+            # Step 2: POST /get_messages with {"_token": csrf} body to get mailbox
             r2 = requests.post(f"{MW_BASE}/get_messages",
-                               headers={"Content-Type": "application/json", "X-CSRF-TOKEN": new_csrf},
+                               json={"_token": new_csrf},
+                               headers=mw_headers(new_csrf),
                                cookies=cookies, proxies=NO_PROXY, timeout=15)
-            mailbox = r2.json().get("mailbox", "")
+            cookies.update(dict(r2.cookies))
+            new_csrf = unquote(cookies.get("XSRF-TOKEN", new_csrf))
+            data = r2.json() if r2.content else {}
+
+            print(f"[mw create attempt={attempt+1}] status={r2.status_code} keys={list(data.keys())[:8]}")
+
+            mailbox = data.get("mailbox", "")
             if MW_DOMAIN in mailbox:
                 print(f"[mw create] email={mailbox}")
-                return mailbox, new_csrf
+                return mailbox, new_csrf, cookies
         except Exception as e:
             print(f"[mw create] error: {e}")
-    return None, csrf
+        time.sleep(1)
+    return None, csrf, cookies
 
-def mw_poll_code(cookies, csrf, timeout=120, poll_interval=3):
-    """Poll MailWave inbox for ScriptBlox verification code."""
-    deadline = time.time() + timeout
+def mw_poll_code(cookies, csrf, timeout=150, poll_interval=3):
+    """Poll MailWave inbox for ScriptBlox 7-digit verification code.
+    Body uses Laravel CSRF _token — matches browser exactly."""
+    deadline  = time.time() + timeout
     poll_count = 0
-    time.sleep(3)  # initial wait
+    last_csrf = csrf
+    time.sleep(3)  # initial wait — let email arrive
 
     while time.time() < deadline:
         poll_count += 1
         try:
+            # Browser sends {"_token": "<laravel-csrf>"} — this is the 53 bytes
+            body = {"_token": last_csrf}
             r = requests.post(f"{MW_BASE}/get_messages",
-                              headers={"Content-Type": "application/json", "X-CSRF-TOKEN": csrf},
+                              json=body,
+                              headers=mw_headers(last_csrf),
                               cookies=cookies, proxies=NO_PROXY, timeout=15)
+            # Rotate CSRF — Laravel regenerates it each request
+            cookies.update(dict(r.cookies))
+            last_csrf = unquote(cookies.get("XSRF-TOKEN", last_csrf))
             data = r.json() if r.content else {}
-            # MailWave uses 'histories' for received emails
-            messages = (data.get("histories") or data.get("messages") or
-                        data.get("emails") or data.get("inbox") or data.get("mail") or [])
-            if isinstance(messages, dict): messages = list(messages.values())
-            if not isinstance(messages, list): messages = []
 
-            # Debug: dump FULL raw response first 2 polls
             if poll_count <= 2:
-                raw = json.dumps(data)[:800]
+                raw = json.dumps(data)[:600]
                 print(f"[mw poll #{poll_count}] RAW: {raw}")
 
+            messages = data.get("messages") or []
+            if not isinstance(messages, list): messages = []
+            email_token = data.get("email_token", "")
+
             if poll_count % 5 == 1:
-                print(f"[mw poll #{poll_count}] msg_count={len(messages)} keys={list(data.keys())}")
+                print(f"[mw poll #{poll_count}] status={r.status_code} "
+                      f"msg_count={len(messages)} mailbox={data.get('mailbox','')[:40]}")
                 if messages:
-                    sample = messages[0]
-                    if isinstance(sample, dict):
-                        print(f"[mw sample] keys={list(sample.keys())[:12]} "
-                              f"from={str(sample.get('from',''))[:60]} "
-                              f"sender={str(sample.get('sender',''))[:60]} "
-                              f"subject={str(sample.get('subject',''))[:60]}")
+                    s = messages[0]
+                    if isinstance(s, dict):
+                        print(f"[mw sample] keys={list(s.keys())[:10]} "
+                              f"from={str(s.get('from',''))[:40]} "
+                              f"subject={str(s.get('subject',''))[:50]}")
 
             for msg in messages:
                 if not isinstance(msg, dict): continue
-                # If message has an ID, fetch full content via /message or /show
-                msg_id = msg.get("id") or msg.get("_id") or msg.get("uid")
-                full_content = ""
-                if msg_id:
-                    # Try to fetch full message body
-                    for endpoint in [f"/message/{msg_id}", f"/show/{msg_id}", f"/mail/{msg_id}"]:
-                        try:
-                            fr = requests.get(f"{MW_BASE}{endpoint}",
-                                              cookies=cookies, proxies=NO_PROXY, timeout=10)
-                            if fr.status_code == 200:
-                                full_content = fr.text
-                                if full_content: break
-                        except: pass
+                sender  = str(msg.get("from") or msg.get("sender") or "").lower()
+                subject = str(msg.get("subject") or "").lower()
 
-                # Flatten all string fields
-                parts = [full_content] if full_content else []
-                for k in ("from","sender","from_email","subject","body","body_html",
-                          "body_text","html","text","content","message","preview","snippet","data"):
+                is_sb = "scriptblox" in sender or "scriptblox" in subject or "verification" in subject
+                if not is_sb: continue
+
+                # Try inline body fields first
+                blob_parts = []
+                for k in ("body","body_html","body_text","html","text","content",
+                          "preview","snippet","message"):
                     v = msg.get(k)
-                    if isinstance(v, str): parts.append(v)
-                    elif isinstance(v, dict):
-                        for sub in v.values():
-                            if isinstance(sub, str): parts.append(sub)
-                blob = " ".join(parts)
-                if not blob: continue
-
-                blob_lower = blob.lower()
-                is_sb = ("scriptblox" in blob_lower or
-                         "verification code" in blob_lower or
-                         "verify your email" in blob_lower)
-                if not is_sb:
-                    print(f"[mw skip] not SB. blob_preview={blob[:150]}")
-                    continue
+                    if isinstance(v, str): blob_parts.append(v)
+                blob = " ".join(blob_parts) + " " + subject
 
                 match = re.search(r"(?<!\d)(\d{7})(?!\d)", blob)
                 if match:
                     code = match.group(1)
-                    print(f"[mw FOUND] code={code}")
+                    print(f"[mw FOUND inline] code={code}")
                     return code
-                else:
-                    print(f"[mw no code] SB msg but no 7-digit. preview={blob[:200]}")
+
+                # Fallback: fetch /view/{email_token} HTML page and scrape
+                if email_token:
+                    try:
+                        vr = requests.get(f"{MW_BASE}/view/{email_token}",
+                                          cookies=cookies, proxies=NO_PROXY, timeout=15,
+                                          headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/143.0.0.0 Safari/537.36"})
+                        if vr.status_code == 200 and "scriptblox" in vr.text.lower():
+                            m = re.search(r"(?<!\d)(\d{7})(?!\d)", vr.text)
+                            if m:
+                                code = m.group(1)
+                                print(f"[mw FOUND via /view] code={code}")
+                                return code
+                    except Exception as e:
+                        print(f"[mw view error] {e}")
         except Exception as e:
-            print(f"[mw poll] error: {e}")
+            print(f"[mw poll #{poll_count}] error: {e}")
         time.sleep(poll_interval)
     print(f"[mw] TIMEOUT after {poll_count} polls")
     return None
@@ -385,7 +414,7 @@ def sb_verify_account(code, token_value, proxy_r=None, visitor_id=None):
             "Content-Type":  "application/json",
             "Accept":        "application/json",
             "Origin":        "https://scriptblox.com",
-            "Referer":       "https://scriptblox.com/verify?redirect=/",
+            "Referer":       "https://scriptblox.com/verify",
             "User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
             # Critical: NO "Bearer " prefix — browser sends raw JWT
             "Authorization": token_value,
@@ -781,7 +810,7 @@ def create_account(sess_token, slot):
     # MailWave — CSRF-based, AULA domain
     mw_cookies, mw_csrf = mw_setup()
     captcha = solve_turnstile_capsolver()
-    email_addr, mw_csrf = mw_create_email(mw_cookies, mw_csrf)
+    email_addr, mw_csrf, mw_cookies = mw_create_email(mw_cookies, mw_csrf)
 
     if not email_addr or not captcha:
         state["failed"] += 1
@@ -859,7 +888,7 @@ def create_account(sess_token, slot):
 
     # ── Poll MailWave for verification code ────────────────────────────────────
     log_emit(sess_token, f"[#{slot}] waiting for verification email...", "dim")
-    verify_code = mw_poll_code(mw_cookies, mw_csrf, timeout=120)
+    verify_code = mw_poll_code(mw_cookies, mw_csrf, timeout=150)
     verified    = False
     final_token = signup_token
 
