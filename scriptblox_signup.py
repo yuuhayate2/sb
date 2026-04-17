@@ -121,55 +121,141 @@ def mw_get_email(cookies, csrf):
     return None, csrf
 
 # ── Cookie extraction from signup response ───────────────────────────────────
-def extract_session_cookies(response, resp_json):
-    """Extract session cookies from SB signup response. Returns list of cookie dicts in browser format."""
+def parse_set_cookie_header(header):
+    """Parse a single Set-Cookie header string into Cookie-Editor format."""
+    if not header: return None
+    parts = header.split(';')
+    if not parts: return None
+
+    # First part is name=value
+    nv = parts[0].strip().split('=', 1)
+    if len(nv) != 2: return None
+    name, value = nv[0].strip(), nv[1].strip()
+    if not name: return None
+
+    cookie = {
+        "domain":   "scriptblox.com",
+        "hostOnly": True,
+        "httpOnly": False,
+        "name":     name,
+        "path":     "/",
+        "sameSite": None,
+        "secure":   False,
+        "session":  True,
+        "storeId":  None,
+        "value":    value,
+    }
+
+    for attr in parts[1:]:
+        attr  = attr.strip()
+        lower = attr.lower()
+
+        if lower.startswith('domain='):
+            d = attr.split('=', 1)[1].strip()
+            cookie["domain"]   = d
+            cookie["hostOnly"] = not d.startswith('.')
+        elif lower.startswith('path='):
+            cookie["path"] = attr.split('=', 1)[1].strip() or "/"
+        elif lower.startswith('expires='):
+            try:
+                from email.utils import parsedate_to_datetime
+                dt = parsedate_to_datetime(attr.split('=', 1)[1].strip())
+                cookie["expirationDate"] = dt.timestamp()
+                cookie["session"] = False
+            except:
+                pass
+        elif lower.startswith('max-age='):
+            try:
+                age = int(attr.split('=', 1)[1].strip())
+                cookie["expirationDate"] = datetime.now(timezone.utc).timestamp() + age
+                cookie["session"] = False
+            except:
+                pass
+        elif lower.startswith('samesite='):
+            ss = attr.split('=', 1)[1].strip().lower()
+            if ss == 'none': cookie["sameSite"] = "no_restriction"
+            elif ss in ('lax', 'strict'): cookie["sameSite"] = ss
+        elif lower == 'secure':
+            cookie["secure"] = True
+        elif lower == 'httponly':
+            cookie["httpOnly"] = True
+
+    return cookie
+
+def get_all_set_cookie_headers(response):
+    """Get all Set-Cookie header values from response (can be multiple)."""
+    headers = []
+    try:
+        # urllib3 HTTPResponse has a headers object with get_all/getlist
+        raw_headers = getattr(response.raw, 'headers', None)
+        if raw_headers:
+            if hasattr(raw_headers, 'get_all'):
+                headers = raw_headers.get_all('Set-Cookie') or []
+            elif hasattr(raw_headers, 'getlist'):
+                headers = raw_headers.getlist('Set-Cookie') or []
+    except:
+        pass
+
+    # Fallback: requests' merged headers (comma-joined, can be tricky to split)
+    if not headers:
+        merged = response.headers.get('Set-Cookie', '')
+        if merged:
+            # Split carefully — commas can appear inside expires= dates
+            # Use regex to split on ", " that precedes a cookie-name=value pattern
+            headers = re.split(r',\s*(?=[A-Za-z_][A-Za-z0-9_\-]*=)', merged)
+
+    return headers
+
+def extract_session_cookies(response, resp_json=None):
+    """Extract full session cookies from SB signup response in Cookie-Editor format."""
+    raw_headers = get_all_set_cookie_headers(response)
     cookies = []
+    seen = set()
 
-    # 1. Extract from Set-Cookie headers
-    for cookie in response.cookies:
-        cookies.append({
-            "domain": ".scriptblox.com",
-            "hostOnly": False,
-            "httpOnly": True,
-            "name": cookie.name,
-            "path": cookie.path or "/",
-            "sameSite": "lax",
-            "secure": cookie.secure,
-            "session": not cookie.expires,
-            "storeId": None,
-            "value": cookie.value,
-        })
+    for h in raw_headers:
+        parsed = parse_set_cookie_header(h)
+        if not parsed: continue
+        # Dedupe by (name, domain)
+        key = (parsed["name"], parsed["domain"])
+        if key in seen: continue
+        seen.add(key)
+        cookies.append(parsed)
 
-    # 2. Extract token from JSON body (common patterns)
-    token = None
-    if isinstance(resp_json, dict):
-        # Try common token field names
-        for field in ("token", "accessToken", "access_token", "jwt", "sessionToken"):
-            if resp_json.get(field):
-                token = resp_json[field]
-                break
-        # Nested user object
-        if not token and isinstance(resp_json.get("user"), dict):
-            for field in ("token", "accessToken"):
-                if resp_json["user"].get(field):
-                    token = resp_json["user"][field]
-                    break
-
-    if token:
-        cookies.append({
-            "domain": "scriptblox.com",
-            "hostOnly": True,
-            "httpOnly": False,
-            "name": "__scriptblox_validation",
-            "path": "/",
-            "sameSite": "lax",
-            "secure": True,
-            "session": False,
-            "storeId": None,
-            "value": token,
-        })
+    # Fallback: if no Set-Cookie headers parsed, rebuild from requests cookie jar
+    if not cookies:
+        for c in response.cookies:
+            domain = c.domain or "scriptblox.com"
+            cookie = {
+                "domain":   domain,
+                "hostOnly": not domain.startswith('.'),
+                "httpOnly": bool(c._rest.get('HttpOnly')) if hasattr(c, '_rest') else False,
+                "name":     c.name,
+                "path":     c.path or "/",
+                "sameSite": "lax",
+                "secure":   bool(c.secure),
+                "session":  c.expires is None,
+                "storeId":  None,
+                "value":    c.value,
+            }
+            if c.expires:
+                cookie["expirationDate"] = float(c.expires)
+            cookies.append(cookie)
 
     return cookies
+
+def decode_jwt_payload(jwt_str):
+    """Decode JWT payload without verification — just to extract user info for logging."""
+    try:
+        import base64
+        parts = jwt_str.split('.')
+        if len(parts) < 2: return None
+        payload = parts[1]
+        # Pad base64
+        payload += '=' * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded)
+    except:
+        return None
 
 def upload_cookies_to_sourcebin(cookies_json):
     """Upload cookies.json to sourceb.in and return the URL."""
@@ -322,11 +408,26 @@ def create_account(slot):
     session_cookies = extract_session_cookies(r, resp)
     cookies_url = None
     cookies_json_str = None
+    jwt_verified = False
+
     if session_cookies:
         cookies_json_str = json.dumps(session_cookies, indent=2)
+
+        # Verify we got a valid JWT (confirms signup actually worked)
+        for c in session_cookies:
+            if c["name"] in ("token", "__scriptblox_validation"):
+                payload = decode_jwt_payload(c["value"])
+                if payload and payload.get("username"):
+                    jwt_verified = True
+                    break
+
         cookies_url = upload_cookies_to_sourcebin(cookies_json_str)
         if cookies_url:
-            log_emit(f"[#{slot}] cookies uploaded → {cookies_url}", "dim")
+            log_emit(f"[#{slot}] 🍪 cookies uploaded ({len(session_cookies)} cookies) → {cookies_url}", "dim")
+        else:
+            log_emit(f"[#{slot}] 🍪 cookies extracted ({len(session_cookies)}) — sourcebin failed, will attach to webhook", "dim")
+    else:
+        log_emit(f"[#{slot}] ⚠ no session cookies in response — signup may have failed silently", "err")
 
     # Send webhook FIRST — if this fails, still save locally but warn
     webhook_ok = send_webhook(username, password, email_addr, cookies_url, cookies_json_str)
