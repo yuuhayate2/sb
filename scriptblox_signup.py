@@ -597,6 +597,19 @@ def rand_password(): return "".join(random.choices(string.ascii_letters + string
 
 def proxy_to_requests(proxy):
     if not proxy: return None
+    # Handle string format (host:port or host:port:user:pass or http://...)
+    if isinstance(proxy, str):
+        p = proxy.strip()
+        if p.startswith("http://") or p.startswith("https://"):
+            return {"http": p, "https": p}
+        parts = p.split(":")
+        if len(parts) == 2:
+            return {"http": f"http://{p}", "https": f"http://{p}"}
+        elif len(parts) == 4:
+            host, port, user, pw = parts
+            return {"http": f"http://{user}:{pw}@{host}:{port}", "https": f"http://{user}:{pw}@{host}:{port}"}
+        return {"http": f"http://{p}", "https": f"http://{p}"}
+    # Handle dict format from parse_proxy
     server = proxy.get("server", "")
     user, pw = proxy.get("username",""), proxy.get("password","")
     if user:
@@ -669,7 +682,9 @@ def create_account(sess_token, slot):
     proxy_r     = proxy_to_requests(proxy)
     webhook_url = sess["webhook"]
 
+    proxy_label = "direct (no proxy)" if not proxy_r else list(proxy_r.values())[0][:60]
     log_emit(sess_token, f"[#{slot}] creating email + solving captcha...", "dim")
+    print(f"[#{slot}] proxies_count={len(sess['proxies'])} selected={proxy} proxy_r={proxy_r}")
 
     # DisMail — no CSRF, proper API
     dm_uid, email_addr = dm_create_email()
