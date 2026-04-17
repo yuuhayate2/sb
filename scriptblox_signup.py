@@ -667,110 +667,129 @@ def upload_cookies_to_sourcebin(cookies_json):
 
 # ── Discord Webhook ───────────────────────────────────────────────────────────
 def send_webhook(webhook_url, username, password, email, cookies_url=None, cookies_json=None, verify_status="unverified"):
-    if not webhook_url: return False
+    if not webhook_url:
+        return False
+
     try:
         is_verified = (verify_status == "verified")
 
-        # Premium solid palette — cyan verified, amber unverified
+        # Colors and Status
         color = 0x00D4FF if is_verified else 0xF5C842
-        status_emoji = "🟢" if is_verified else "🟡"
-        status_line  = "Verified" if is_verified else "Unverified"
-        cookie_state = "ready for import" if is_verified else "session cookies included"
+        status_emoji = "✅" if is_verified else "⚠️"
+        status_text = "Verified" if is_verified else "Unverified"
 
-        # Clean 2-column top row, then full-width rows below
+        # Fields
         fields = [
-            {"name": "👤  Username",
+            {"name": "👤 Username",
              "value": f"```\n{username}\n```",
              "inline": True},
-            {"name": f"{status_emoji}  Status",
-             "value": f"```\n{status_line}\n```",
+
+            {"name": f"{status_emoji} Status",
+             "value": f"```\n{status_text}\n```",
              "inline": True},
-            {"name": "📧  Email",
+
+            {"name": "📧 Email",
              "value": f"```\n{mask_email(email)}\n```",
              "inline": False},
         ]
 
+        # Cookies Field
         if cookies_url:
             fields.append({
-                "name":  "🍪  Session Cookies",
-                "value": (f"> {cookie_state}\n"
+                "name": "🍪 Session Cookies",
+                "value": (f"> **Ready for import**\n"
                           f"> Import via **Cookie-Editor** extension\n\n"
                           f"[📥 **Download cookies.json**]({cookies_url})"),
-                "inline": False,
+                "inline": False
             })
         else:
             fields.append({
-                "name":  "🍪  Session Cookies",
-                "value": f"> {cookie_state}\n> _Attached below as a file._",
-                "inline": False,
+                "name": "🍪 Session Cookies",
+                "value": "> **Session cookies included**\n> Attached as file below",
+                "inline": False
             })
 
         embed = {
             "author": {
-                "name":"KUNI · SB GENERATOR",
-                "icon_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
+                "name": "KUNI · SB GENERATOR",
+                "icon_url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png",
             },
-            "title":       "✨  New Account Generated",
-            "description": f"A fresh ScriptBlox account is ready for use.\n───────────────────────────",
-            "color":       color,
-            "fields":      fields,
-            "thumbnail":   {"url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp"},
+            "title": "✨ New Account Generated",
+            "description": "A fresh ScriptBlox account is ready for use.\n───────────────────────────",
+            "color": color,
+            "fields": fields,
+            "thumbnail": {
+                "url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png"
+            },
             "footer": {
-                "text":f"Kuni Tool  •  {datetime.now(timezone.utc).strftime('%b %d, %Y  %H:%M UTC')}",
-                "icon_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
+                "text": f"Kuni Tool • {datetime.now(timezone.utc).strftime('%b %d, %Y %H:%M UTC')}",
+                "icon_url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png",
             },
-            "timestamp":   datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         payload = {
-            "username":   "Kuni SB Gen",
-            "avatar_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
-            "embeds":     [embed],
+            "username": "Kuni SB Gen",
+            "avatar_url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png",
+            "embeds": [embed],
         }
 
+        # Send the webhook
         if cookies_json and not cookies_url:
             files = {"cookies.json": ("cookies.json", cookies_json, "application/json")}
-            r = requests.post(webhook_url, data={"payload_json": json.dumps(payload)},
-                              files=files, proxies=NO_PROXY, timeout=15)
+            r = requests.post(webhook_url,
+                              data={"payload_json": json.dumps(payload)},
+                              files=files,
+                              proxies=NO_PROXY,
+                              timeout=15)
         else:
-            r = requests.post(webhook_url, json=payload, proxies=NO_PROXY, timeout=10)
+            r = requests.post(webhook_url,
+                              json=payload,
+                              proxies=NO_PROXY,
+                              timeout=10)
+
         return r.status_code in (200, 204)
+
     except Exception as e:
         print(f"[webhook] error: {e}")
         return False
 
+
 def test_webhook(url):
+    """Test webhook with your custom Kuni logo"""
     try:
         r = requests.post(url, json={
-            "username":   "Kuni SB Gen",
-            "avatar_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
+            "username": "Kuni SB Gen",
+            "avatar_url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png",
             "embeds": [{
                 "author": {
-                    "name":"KUNI · SB GENERATOR",
-                    "icon_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
+                    "name": "KUNI · SB GENERATOR",
+                    "icon_url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png",
                 },
-                "title":       "✅  Webhook Connected",
+                "title": "✅ Webhook Connected",
                 "description": ("Your webhook is now linked to **Kuni SB Generator**.\n"
                                 "Generated accounts and session cookies will be delivered right here.\n"
                                 "───────────────────────────"),
-                "color":       0x00D4FF,
+                "color": 0x00D4FF,
                 "fields": [
-                    {"name": "🚀  Status",     "value": "```\nOnline\n```",                       "inline": True},
-                    {"name": "🔗  Endpoint",   "value": "```\nscriptblox.com\n```",                "inline": True},
-                    {"name": "📦  Delivery",   "value": "```\nAccount + Cookies\n```",             "inline": True},
+                    {"name": "✅ Status",     "value": "```\nOnline\n```", "inline": True},
+                    {"name": "🔗 Endpoint",   "value": "```\nscriptblox.com\n```", "inline": True},
+                    {"name": "📦 Delivery",   "value": "```\nAccount + Cookies\n```", "inline": True},
                 ],
-                "thumbnail":   {"url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp"},
-                "footer": {
-                    "text":f"Kuni Tool  •  {datetime.now(timezone.utc).strftime('%b %d, %Y  %H:%M UTC')}",
-                    "icon_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
+                "thumbnail": {
+                    "url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png"
                 },
-                "timestamp":   datetime.now(timezone.utc).isoformat(),
+                "footer": {
+                    "text": f"Kuni Tool • {datetime.now(timezone.utc).strftime('%b %d, %Y %H:%M UTC')}",
+                    "icon_url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png",
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }]
         }, proxies=NO_PROXY, timeout=10)
-        return r.status_code in (200, 204)
-    except:
-        return False
 
+        return r.status_code in (200, 204)
+    except Exception:
+        return False
 # ── Utils ─────────────────────────────────────────────────────────────────────
 def rand_username(): return "Kuni" + "".join(random.choices(string.ascii_letters + string.digits, k=10))
 def rand_password(): return "".join(random.choices(string.ascii_letters + string.digits + "!@#$", k=14))
