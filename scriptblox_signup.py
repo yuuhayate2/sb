@@ -39,8 +39,8 @@ SB_SIGNUP     = "https://scriptblox.com/api/auth/signup"
 SB_VERIFY     = "https://scriptblox.com/api/auth/verify"
 SB_LOGIN      = "https://scriptblox.com/api/auth/login"
 SB_HOME       = "https://scriptblox.com/"
-DM_BASE       = "https://dismail.top"
-DM_DOMAIN     = "dismail.top"
+MW_BASE       = "https://mailwave.dev"
+MW_DOMAIN     = "aula.edu.pl"
 NO_PROXY      = {"http": None, "https": None}
 
 USER_DATA_DIR = Path(__file__).parent / "user_data"
@@ -255,84 +255,98 @@ def atomic_increment_used(key, limit):
                 time.sleep(0.1)
         return (None, False)
 
-# ── DisMail helpers ───────────────────────────────────────────────────────────
-def dm_create_email():
-    """Create a disposable email via DisMail API. Returns (uid, email) or (None, None)."""
-    for attempt in range(3):
-        try:
-            alias = "kuni" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-            r = requests.post(f"{DM_BASE}/api/create-custom-email",
-                              json={"username": alias, "domain": DM_DOMAIN},
-                              timeout=15, proxies=NO_PROXY)
-            data = r.json()
-            if data.get("success"):
-                email = data.get("email", "")
-                uid   = data.get("id", alias)
-                return uid, email
-        except Exception as e:
-            print(f"[dm] create error (attempt {attempt+1}): {e}")
-    return None, None
-
-def dm_poll_code(uid, timeout=90):
-    """Poll DisMail inbox for ScriptBlox 7-digit verification code."""
-    deadline  = time.time() + timeout
-    seen_ids  = set()
-    poll_count = 0
-    # Pre-populate seen_ids with existing messages
+# ── MailWave helpers (AULA domain) ────────────────────────────────────────────
+def mw_setup():
+    """Initialize MailWave session — fetch CSRF token + cookies."""
     try:
-        r = requests.get(f"{DM_BASE}/api/check-inbox/{uid}",
-                         timeout=15, proxies=NO_PROXY)
-        for msg in r.json().get("messages", []):
-            seen_ids.add(msg.get("id", ""))
-    except: pass
+        r = requests.get(f"{MW_BASE}/", proxies=NO_PROXY, timeout=15)
+        token = re.search(r'<meta name="csrf-token" content="([^"]+)"', r.text)
+        csrf = token.group(1) if token else None
+        return dict(r.cookies), csrf
+    except Exception as e:
+        print(f"[mw setup] error: {e}")
+        return None, None
+
+def mw_create_email(cookies, csrf):
+    """Create email alias on aula.edu.pl domain. Returns (email, new_csrf)."""
+    if not csrf or cookies is None: return None, csrf
+    for _ in range(20):
+        alias = "kuni" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        try:
+            r = requests.post(f"{MW_BASE}/change",
+                              data={"_token": csrf, "name": alias, "domain": MW_DOMAIN},
+                              cookies=cookies, proxies=NO_PROXY, timeout=15)
+            cookies.update(dict(r.cookies))
+            new_csrf = unquote(cookies.get("XSRF-TOKEN", csrf))
+            r2 = requests.post(f"{MW_BASE}/get_messages",
+                               headers={"Content-Type": "application/json", "X-CSRF-TOKEN": new_csrf},
+                               cookies=cookies, proxies=NO_PROXY, timeout=15)
+            mailbox = r2.json().get("mailbox", "")
+            if MW_DOMAIN in mailbox:
+                print(f"[mw create] email={mailbox}")
+                return mailbox, new_csrf
+        except Exception as e:
+            print(f"[mw create] error: {e}")
+    return None, csrf
+
+def mw_poll_code(cookies, csrf, timeout=120, poll_interval=3):
+    """Poll MailWave inbox for ScriptBlox verification code."""
+    deadline = time.time() + timeout
+    poll_count = 0
+    time.sleep(3)  # initial wait
 
     while time.time() < deadline:
         poll_count += 1
         try:
-            r = requests.get(f"{DM_BASE}/api/check-inbox/{uid}",
-                             timeout=15, proxies=NO_PROXY)
-            data = r.json()
-            messages = data.get("messages", [])
+            r = requests.post(f"{MW_BASE}/get_messages",
+                              headers={"Content-Type": "application/json", "X-CSRF-TOKEN": csrf},
+                              cookies=cookies, proxies=NO_PROXY, timeout=15)
+            data = r.json() if r.content else {}
+            # MailWave message keys vary — try all common ones
+            messages = (data.get("messages") or data.get("emails") or
+                        data.get("inbox") or data.get("mail") or [])
+            if isinstance(messages, dict): messages = list(messages.values())
+            if not isinstance(messages, list): messages = []
 
-            # Debug: log inbox state every 5 polls
             if poll_count % 5 == 1:
-                print(f"[dm poll #{poll_count}] uid={uid} status={r.status_code} "
-                      f"msg_count={len(messages)} keys={list(data.keys())[:5]}")
+                print(f"[mw poll #{poll_count}] msg_count={len(messages)} keys={list(data.keys())[:5]}")
                 if messages:
                     sample = messages[0]
-                    print(f"[dm sample] keys={list(sample.keys())} "
-                          f"sender={str(sample.get('sender',''))[:80]} "
-                          f"subject={str(sample.get('subject',''))[:80]}")
+                    if isinstance(sample, dict):
+                        print(f"[mw sample] keys={list(sample.keys())[:8]} "
+                              f"from={str(sample.get('from',''))[:60]} "
+                              f"subject={str(sample.get('subject',''))[:60]}")
 
             for msg in messages:
-                msg_id = msg.get("id", "")
-                if msg_id in seen_ids: continue
-                sender  = str(msg.get("sender", "")).lower()
-                subject = str(msg.get("subject", "")).lower()
-                content = str(msg.get("body_html") or msg.get("body_text") or msg.get("body") or "")
-                # Broader SB detection — check sender, subject, AND body
-                blob = (sender + " " + subject + " " + content).lower()
-                is_sb = ("scriptblox" in blob or
-                         "verification code" in blob or
-                         "verify your email" in blob or
-                         re.search(r'(?<!\d)\d{7}(?!\d)', content))
-                if not is_sb:
-                    print(f"[dm skip] sender={sender[:50]} subject={subject[:50]}")
-                    seen_ids.add(msg_id)
-                    continue
-                # Extract 7-digit code from full blob (body + subject)
-                search_text = content + " " + subject
-                match = re.search(r"(?<!\d)(\d{7})(?!\d)", search_text)
+                if not isinstance(msg, dict): continue
+                # Flatten all string fields to search
+                parts = []
+                for k in ("from","sender","from_email","subject","body","body_html",
+                          "body_text","html","text","content","message","preview","snippet"):
+                    v = msg.get(k)
+                    if isinstance(v, str): parts.append(v)
+                    elif isinstance(v, dict):
+                        for sub in v.values():
+                            if isinstance(sub, str): parts.append(sub)
+                blob = " ".join(parts)
+                if not blob: continue
+
+                # SB detection — sender, subject, or body
+                blob_lower = blob.lower()
+                is_sb = ("scriptblox" in blob_lower or
+                         "verification code" in blob_lower or
+                         "verify your email" in blob_lower)
+                if not is_sb: continue
+
+                match = re.search(r"(?<!\d)(\d{7})(?!\d)", blob)
                 if match:
-                    print(f"[dm FOUND] code={match.group(1)} from sender={sender[:50]}")
-                    return match.group(1)
-                else:
-                    print(f"[dm no code] sb-like msg but no 7-digit code. body_len={len(content)}")
-                    seen_ids.add(msg_id)
+                    code = match.group(1)
+                    print(f"[mw FOUND] code={code}")
+                    return code
         except Exception as e:
-            print(f"[dm] poll error: {e}")
-        time.sleep(2)
-    print(f"[dm] TIMEOUT after {poll_count} polls - no code found")
+            print(f"[mw poll] error: {e}")
+        time.sleep(poll_interval)
+    print(f"[mw] TIMEOUT after {poll_count} polls")
     return None
 
 # ── ScriptBlox verify + login ─────────────────────────────────────────────────
@@ -714,9 +728,10 @@ def create_account(sess_token, slot):
     log_emit(sess_token, f"[#{slot}] creating email + solving captcha...", "dim")
     print(f"[#{slot}] proxies_count={len(sess['proxies'])} selected={proxy} proxy_r={proxy_r}")
 
-    # DisMail — no CSRF, proper API
-    dm_uid, email_addr = dm_create_email()
+    # MailWave — CSRF-based, AULA domain
+    mw_cookies, mw_csrf = mw_setup()
     captcha = solve_turnstile_capsolver()
+    email_addr, mw_csrf = mw_create_email(mw_cookies, mw_csrf)
 
     if not email_addr or not captcha:
         state["failed"] += 1
@@ -724,7 +739,7 @@ def create_account(sess_token, slot):
         log_emit(sess_token, f"[#{slot}] x setup failed ({reason})", "err")
         return
 
-    print(f"[#{slot}] dm_uid={dm_uid} email={email_addr}")
+    print(f"[#{slot}] email={email_addr}")
 
     log_emit(sess_token, f"[#{slot}] submitting signup...", "dim")
 
@@ -791,7 +806,7 @@ def create_account(sess_token, slot):
 
     # ── Poll DisMail for verification code ────────────────────────────────────
     log_emit(sess_token, f"[#{slot}] waiting for verification email...", "dim")
-    verify_code = dm_poll_code(dm_uid, timeout=90)
+    verify_code = mw_poll_code(mw_cookies, mw_csrf, timeout=120)
     verified    = False
     final_token = signup_token
 
