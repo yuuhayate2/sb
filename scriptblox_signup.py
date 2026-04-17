@@ -707,7 +707,7 @@ def send_webhook(webhook_url, username, password, email, cookies_url=None, cooki
 
         embed = {
             "author": {
-                "name":𓆩☠︎︎𓆪 "KUNI · SB GENERATOR",
+                "name":"KUNI · SB GENERATOR",
                 "icon_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
             },
             "title":       "✨  New Account Generated",
@@ -716,7 +716,7 @@ def send_webhook(webhook_url, username, password, email, cookies_url=None, cooki
             "fields":      fields,
             "thumbnail":   {"url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp"},
             "footer": {
-                "text":  𓆩☠︎︎𓆪 f"Kuni Tool  •  {datetime.now(timezone.utc).strftime('%b %d, %Y  %H:%M UTC')}",
+                "text":f"Kuni Tool  •  {datetime.now(timezone.utc).strftime('%b %d, %Y  %H:%M UTC')}",
                 "icon_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
             },
             "timestamp":   datetime.now(timezone.utc).isoformat(),
@@ -746,7 +746,7 @@ def test_webhook(url):
             "avatar_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
             "embeds": [{
                 "author": {
-                    "name":     "KUNI · SB GENERATOR",
+                    "name":"KUNI · SB GENERATOR",
                     "icon_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
                 },
                 "title":       "✅  Webhook Connected",
@@ -761,7 +761,7 @@ def test_webhook(url):
                 ],
                 "thumbnail":   {"url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp"},
                 "footer": {
-                    "text": 𓆩☠︎︎𓆪 f"Kuni Tool  •  {datetime.now(timezone.utc).strftime('%b %d, %Y  %H:%M UTC')}",
+                    "text":f"Kuni Tool  •  {datetime.now(timezone.utc).strftime('%b %d, %Y  %H:%M UTC')}",
                     "icon_url": "https://cdn.discordapp.com/emojis/1163495097574047815.webp",
                 },
                 "timestamp":   datetime.now(timezone.utc).isoformat(),
