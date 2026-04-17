@@ -277,6 +277,7 @@ def dm_poll_code(uid, timeout=90):
     """Poll DisMail inbox for ScriptBlox 7-digit verification code."""
     deadline  = time.time() + timeout
     seen_ids  = set()
+    poll_count = 0
     # Pre-populate seen_ids with existing messages
     try:
         r = requests.get(f"{DM_BASE}/api/check-inbox/{uid}",
@@ -286,25 +287,52 @@ def dm_poll_code(uid, timeout=90):
     except: pass
 
     while time.time() < deadline:
+        poll_count += 1
         try:
             r = requests.get(f"{DM_BASE}/api/check-inbox/{uid}",
                              timeout=15, proxies=NO_PROXY)
-            messages = r.json().get("messages", [])
+            data = r.json()
+            messages = data.get("messages", [])
+
+            # Debug: log inbox state every 5 polls
+            if poll_count % 5 == 1:
+                print(f"[dm poll #{poll_count}] uid={uid} status={r.status_code} "
+                      f"msg_count={len(messages)} keys={list(data.keys())[:5]}")
+                if messages:
+                    sample = messages[0]
+                    print(f"[dm sample] keys={list(sample.keys())} "
+                          f"sender={str(sample.get('sender',''))[:80]} "
+                          f"subject={str(sample.get('subject',''))[:80]}")
+
             for msg in messages:
                 msg_id = msg.get("id", "")
                 if msg_id in seen_ids: continue
-                sender = str(msg.get("sender", "")).lower()
-                if "scriptblox" not in sender:
+                sender  = str(msg.get("sender", "")).lower()
+                subject = str(msg.get("subject", "")).lower()
+                content = str(msg.get("body_html") or msg.get("body_text") or msg.get("body") or "")
+                # Broader SB detection — check sender, subject, AND body
+                blob = (sender + " " + subject + " " + content).lower()
+                is_sb = ("scriptblox" in blob or
+                         "verification code" in blob or
+                         "verify your email" in blob or
+                         re.search(r'(?<!\d)\d{7}(?!\d)', content))
+                if not is_sb:
+                    print(f"[dm skip] sender={sender[:50]} subject={subject[:50]}")
                     seen_ids.add(msg_id)
                     continue
-                content = str(msg.get("body_html") or msg.get("body_text") or "")
-                match = re.search(r"(?<!\d)(\d{7})(?!\d)", content)
+                # Extract 7-digit code from full blob (body + subject)
+                search_text = content + " " + subject
+                match = re.search(r"(?<!\d)(\d{7})(?!\d)", search_text)
                 if match:
+                    print(f"[dm FOUND] code={match.group(1)} from sender={sender[:50]}")
                     return match.group(1)
-                seen_ids.add(msg_id)
+                else:
+                    print(f"[dm no code] sb-like msg but no 7-digit code. body_len={len(content)}")
+                    seen_ids.add(msg_id)
         except Exception as e:
             print(f"[dm] poll error: {e}")
         time.sleep(2)
+    print(f"[dm] TIMEOUT after {poll_count} polls - no code found")
     return None
 
 # ── ScriptBlox verify + login ─────────────────────────────────────────────────
@@ -695,6 +723,8 @@ def create_account(sess_token, slot):
         reason = "email" if not email_addr else "captcha"
         log_emit(sess_token, f"[#{slot}] x setup failed ({reason})", "err")
         return
+
+    print(f"[#{slot}] dm_uid={dm_uid} email={email_addr}")
 
     log_emit(sess_token, f"[#{slot}] submitting signup...", "dim")
 
