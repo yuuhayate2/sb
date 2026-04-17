@@ -1,4 +1,18 @@
-
+# scriptblox_signup.py — Kuni Tool · SB Account Generator v2.6
+# Deploy on Railway / Render — open http://localhost:5000
+#
+# v2.6 changelog:
+#   • Multi-user session isolation (per-license state, webhook, proxies)
+#   • Rate limiting on /verify-key and /claim-trial
+#   • Email domain masking in Discord webhook (privacy)
+#   • Enhanced fingerprinting: canvas + audio + WebGL + fonts
+#   • Datacenter/VPN IP detection for trial abuse
+#   • Server-side UA consistency verification
+#   • Atomic counter with TOCTOU-safe retry loop
+#   • JWT exp parsing → accurate cookie expiry
+#   • SocketIO auth middleware (all events require valid session)
+#   • Subnet-level trial blocking (/16 + /24)
+#   • Live license re-check before every batch start
 
 import json, os, random, re, string, threading, hashlib, secrets, time, base64
 from collections import defaultdict, deque
@@ -266,6 +280,112 @@ def mw_get_email(cookies, csrf):
         except: pass
     return None, csrf
 
+def mw_fetch_messages(cookies, csrf):
+    """Fetch current inbox contents from MailWave. Returns raw JSON dict."""
+    try:
+        r = requests.post(f"{MW_BASE}/get_messages",
+                          headers={"Content-Type": "application/json", "X-CSRF-TOKEN": csrf},
+                          cookies=cookies, proxies=NO_PROXY, timeout=15)
+        if r.status_code == 200: return r.json()
+    except: pass
+    return {}
+
+def _extract_text_from_message(msg):
+    """Flatten all text-like fields in a message dict into one searchable string."""
+    if not isinstance(msg, dict): return ""
+    parts = []
+    for k in ("from","sender","from_email","subject","body","body_html","body_text",
+              "html","text","content","message","preview","snippet"):
+        v = msg.get(k)
+        if isinstance(v, str): parts.append(v)
+        elif isinstance(v, dict):
+            for sub in v.values():
+                if isinstance(sub, str): parts.append(sub)
+    return " ".join(parts)
+
+def mw_wait_for_sb_code(cookies, csrf, max_wait=120, poll_interval=4):
+    """Poll MailWave inbox for ScriptBlox verification email. Returns 7-digit code or None."""
+    deadline = time.time() + max_wait
+    # Brief initial wait — MailWave often needs a few seconds to receive
+    time.sleep(3)
+    while time.time() < deadline:
+        data = mw_fetch_messages(cookies, csrf)
+        # MailWave may put messages under different keys depending on version
+        msgs = (data.get("messages") or data.get("emails") or data.get("inbox")
+                or data.get("mail") or [])
+        if isinstance(msgs, dict): msgs = list(msgs.values())
+        if not isinstance(msgs, list): msgs = []
+
+        for msg in msgs:
+            blob = _extract_text_from_message(msg)
+            if not blob: continue
+            blob_lower = blob.lower()
+            # Identify SB-origin messages (sender OR subject OR brand text)
+            is_sb = ("scriptblox" in blob_lower or
+                     "verification code" in blob_lower or
+                     "verify your email" in blob_lower or
+                     ("verify" in blob_lower and "code" in blob_lower))
+            if not is_sb: continue
+            # Extract 7-digit code (SB uses 7 digits)
+            for m in re.finditer(r'(?<!\d)(\d{7})(?!\d)', blob):
+                code = m.group(1)
+                # Reject placeholder/invalid codes
+                if code in ("0000000","1234567","7777777"): continue
+                return code
+        time.sleep(poll_interval)
+    return None
+
+# ── ScriptBlox verification + login ───────────────────────────────────────────
+def sb_verify_email(code, email, cookies_dict):
+    """Submit verification code. Tries multiple endpoint/payload shapes.
+    Returns (response, payload_used) on success, (None, None) on failure."""
+    attempts = [
+        ("https://scriptblox.com/api/auth/verify-email",  {"code": code}),
+        ("https://scriptblox.com/api/auth/verify-email",  {"code": code, "email": email}),
+        ("https://scriptblox.com/api/auth/verify",        {"code": code}),
+        ("https://scriptblox.com/api/auth/verify",        {"code": code, "email": email}),
+        ("https://scriptblox.com/api/auth/verify-code",   {"code": code}),
+        ("https://scriptblox.com/api/auth/email/verify",  {"code": code}),
+    ]
+    for url, payload in attempts:
+        try:
+            r = requests.post(url, json=payload, headers=sb_headers(),
+                              cookies=cookies_dict, timeout=20, verify=False)
+            if r.status_code in (200, 201):
+                try:
+                    body = r.json() if r.content else {}
+                except: body = {}
+                # Reject obvious "not found" / "error" responses
+                if isinstance(body, dict) and body.get("error"): continue
+                return r, {"url": url, "payload": payload}
+        except: pass
+    return None, None
+
+def sb_resend_code(cookies_dict, email):
+    """Ask SB to resend the code (in case first email got lost)."""
+    urls = [
+        "https://scriptblox.com/api/auth/resend-code",
+        "https://scriptblox.com/api/auth/resend-verification",
+        "https://scriptblox.com/api/auth/verify-email/resend",
+    ]
+    for url in urls:
+        try:
+            r = requests.post(url, json={"email": email}, headers=sb_headers(),
+                              cookies=cookies_dict, timeout=15, verify=False)
+            if r.status_code in (200, 201): return True
+        except: pass
+    return False
+
+def sb_login(email, password):
+    """Login to SB — returns response (for cookie extraction) or None."""
+    try:
+        r = requests.post("https://scriptblox.com/api/auth/login",
+                          json={"email": email, "password": password},
+                          headers=sb_headers(), timeout=20, verify=False)
+        if r.status_code in (200, 201): return r
+    except: pass
+    return None
+
 # ── Cookie extraction ─────────────────────────────────────────────────────────
 def parse_set_cookie_header(header):
     if not header: return None
@@ -380,21 +500,23 @@ def upload_cookies_to_sourcebin(cookies_json):
     return None
 
 # ── Discord Webhook ───────────────────────────────────────────────────────────
-def send_webhook(webhook_url, username, password, email, cookies_url=None, cookies_json=None):
+def send_webhook(webhook_url, username, password, email, cookies_url=None, cookies_json=None, verify_status="unverified"):
     if not webhook_url: return False
     try:
+        is_verified = (verify_status == "verified")
+        status_txt = "\u2705 Verified" if is_verified else "\u26A0\uFE0F Unverified"
         fields = [
             {"name": "\U0001F464 Username", "value": f"```{username}```", "inline": True},
             {"name": "\U0001F511 Password", "value": f"```{password}```", "inline": True},
             {"name": "\U0001F4E7 Email",    "value": f"```{mask_email(email)}```", "inline": False},
             {"name": "\U0001F4C5 Created",  "value": datetime.now(timezone.utc).strftime("%b %d, %Y"), "inline": True},
-            {"name": "\u26A1 Status",       "value": "\u2705 Verified" if cookies_url else "\u26A0\uFE0F Unverified", "inline": True},
+            {"name": "\u26A1 Status",       "value": status_txt, "inline": True},
         ]
         if cookies_url:
             fields.append({"name": "\U0001F36A Cookies", "value": f"[cookies.json]({cookies_url})", "inline": False})
         embed = {
             "title": "\U0001F3AF New Account Generated",
-            "color": 0x00ffcc,
+            "color": 0x00ffcc if is_verified else 0xf5c842,
             "description": f"**{username}**",
             "fields": fields,
             "footer": {"text": "Kuni SB Generator \u00B7 v2.6"},
@@ -534,29 +656,72 @@ def create_account(sess_token, slot):
         log_emit(sess_token, f"[#{slot}] x signup failed: {resp.get('message','')}", "err")
         return
 
-    session_cookies  = extract_session_cookies(r)
+    # ── Verification flow ────────────────────────────────────────────────────
+    # Keep signup cookies as fallback
+    signup_cookies_jar = dict(r.cookies)
+    verify_status = "unverified"
+    final_response = r  # use signup response as default source of cookies
+
+    log_emit(sess_token, f"[#{slot}] waiting for verification email...", "dim")
+    code = mw_wait_for_sb_code(cookies, csrf, max_wait=90, poll_interval=4)
+
+    if not code:
+        # Try asking SB to resend once, then poll again with shorter window
+        log_emit(sess_token, f"[#{slot}] no email yet - requesting resend...", "dim")
+        sb_resend_code(signup_cookies_jar, email_addr)
+        code = mw_wait_for_sb_code(cookies, csrf, max_wait=45, poll_interval=3)
+
+    if code:
+        log_emit(sess_token, f"[#{slot}] submitting code {code}...", "dim")
+        vr, _info = sb_verify_email(code, email_addr, signup_cookies_jar)
+        if vr is not None:
+            # Verify succeeded. The verify response MAY include fresh cookies;
+            # but to guarantee we get a verified=true JWT, re-login explicitly.
+            lr = sb_login(email_addr, password)
+            if lr is not None:
+                final_response = lr
+                verify_status = "verified"
+                log_emit(sess_token, f"[#{slot}] account verified & re-logged in", "dim")
+            else:
+                # Use verify response cookies — at minimum the JWT should be
+                # re-issued with verified=true on most implementations.
+                final_response = vr
+                verify_status = "verified"
+                log_emit(sess_token, f"[#{slot}] account verified (using verify cookies)", "dim")
+        else:
+            log_emit(sess_token, f"[#{slot}] verify endpoint rejected code", "err")
+    else:
+        log_emit(sess_token, f"[#{slot}] no verification code received - saving unverified", "err")
+
+    # ── Cookie extraction from final response ────────────────────────────────
+    session_cookies  = extract_session_cookies(final_response)
     cookies_url      = None
     cookies_json_str = None
 
     if session_cookies:
         cookies_json_str = json.dumps(session_cookies, indent=2)
         jwt_ok = False
+        jwt_verified = False
         for c in session_cookies:
             if c["name"] in ("token", "__scriptblox_validation"):
                 pl = decode_jwt_payload(c["value"])
-                if pl and pl.get("username"): jwt_ok = True; break
+                if pl and pl.get("username"):
+                    jwt_ok = True
+                    if pl.get("verified") is True: jwt_verified = True
+                    break
+        if jwt_verified: verify_status = "verified"
         cookies_url = upload_cookies_to_sourcebin(cookies_json_str)
         if cookies_url:
-            log_emit(sess_token, f"[#{slot}] cookies uploaded ({len(session_cookies)} cookies)", "dim")
+            log_emit(sess_token, f"[#{slot}] cookies uploaded ({len(session_cookies)} cookies, {verify_status})", "dim")
         else:
-            log_emit(sess_token, f"[#{slot}] {len(session_cookies)} cookies - attaching to webhook", "dim")
+            log_emit(sess_token, f"[#{slot}] {len(session_cookies)} cookies ({verify_status}) - attaching to webhook", "dim")
         if not jwt_ok:
             log_emit(sess_token, f"[#{slot}] warning: JWT validation check failed", "err")
     else:
         log_emit(sess_token, f"[#{slot}] warning: no session cookies returned", "err")
 
     webhook_ok = send_webhook(webhook_url, username, password, email_addr,
-                              cookies_url, cookies_json_str)
+                              cookies_url, cookies_json_str, verify_status)
     if not webhook_ok:
         log_emit(sess_token, f"[#{slot}] warning: webhook delivery failed - saved locally", "err")
 
@@ -564,6 +729,7 @@ def create_account(sess_token, slot):
         "username": username, "password": password,
         "email": email_addr,
         "cookies_url": cookies_url, "has_session": bool(session_cookies),
+        "verify_status": verify_status,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     with sess["file_lock"]:
@@ -578,7 +744,7 @@ def create_account(sess_token, slot):
         return
 
     state["created"] += 1
-    mark = "[COOKIE]" if cookies_url else "[OK]"
+    mark = "[VERIFIED]" if verify_status == "verified" else ("[COOKIE]" if cookies_url else "[UNVERIFIED]")
     log_emit(sess_token, f"[#{slot}] {mark} {username} | {password}", "ok")
 
 def run_generator(sess_token, count, concurrent):
