@@ -714,7 +714,7 @@ def send_webhook(webhook_url, username, password, email, cookies_url=None, cooki
                 "name": "KUNI · SB GENERATOR",
                 "icon_url": "https://cdn.discordapp.com/attachments/1485145708666552342/1494747738598805626/a21a22f3-ccb2-4df4-a77d-924e06fc2079.png",
             },
-            "title": "✨ New Account Generated",
+            "title": "New Account Generated",
             "description": "A fresh ScriptBlox account is ready for use.\n───────────────────────────",
             "color": color,
             "fields": fields,
