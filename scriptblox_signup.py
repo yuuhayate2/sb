@@ -715,7 +715,7 @@ def send_webhook(webhook_url, username, password, email, cookies_url=None, cooki
                 "icon_url": "https://cdn.discordapp.com/attachments/1485145708666552342/1495745856362516591/content.png",
             },
             "title": "New Account Generated",
-            "description": "A fresh ScriptBlox account is ready for use.\n───────────────────────────",
+            "description": "A fresh ScriptBlox account is generated.\n───────────────────────────",
             "color": color,
             "fields": fields,
             "thumbnail": {
