@@ -1271,7 +1271,7 @@ HTML = r"""<!DOCTYPE html>
 
   :root {
     --bg: #080b0f; 
-    --surface: rgba(14,19,24,0.92); 
+    --surface: rgba(14,19,24,0.90); 
     --surface2: rgba(20,28,36,0.95);
     --border: #1c2a38; 
     --border2: #253545;
@@ -1294,12 +1294,11 @@ HTML = r"""<!DOCTYPE html>
   /* ==================== BACKGROUND + SCANLINE ==================== */
   html, body {
     height: 100%;
-    background: 
-      linear-gradient(rgba(8,11,15,0.88), rgba(8,11,15,0.95)),
-      url('https://cdn.discordapp.com/attachments/1485145708666552342/1495747688388628501/ec3689fb-58f9-494b-871f-ced53b1b4c54.png') center/cover no-repeat fixed;
+    background:
+      linear-gradient(rgba(8,11,15,0.80), rgba(8,11,15,0.92)),
+      url('https://i.imgur.com/V7sJePT.png') center/cover no-repeat fixed;
     color: var(--text);
     font-family: var(--mono);
-    background-attachment: fixed;
   }
 
   body::after {
@@ -1309,8 +1308,8 @@ HTML = r"""<!DOCTYPE html>
     background: repeating-linear-gradient(
       transparent 0px,
       transparent 3px,
-      rgba(0, 212, 255, 0.045) 3px,
-      rgba(0, 212, 255, 0.045) 6px
+      rgba(0, 212, 255, 0.03) 3px,
+      rgba(0, 212, 255, 0.03) 6px
     );
     pointer-events: none;
     z-index: 1;
@@ -1324,39 +1323,52 @@ HTML = r"""<!DOCTYPE html>
 
   .lic-wrap, .app { position: relative; z-index: 2; }
 
-  /* Cards with neon border para maganda sa background */
-  .lic-card, .config-card, .stat, .limit-bar-wrap, .webhook-wrap, 
-  .log-wrap, .tutorial-card, .panel-wrap {
+  /* Cards with glassmorphism + neon glow */
+  .lic-card, .config-card, .stat, .limit-bar-wrap,
+  .log-wrap, .tutorial-card {
     background: var(--surface);
-    border: 1px solid rgba(0,212,255,0.35);
-    box-shadow: 0 0 18px rgba(0,212,255,0.15);
+    border: 1px solid rgba(0,212,255,0.25);
+    box-shadow: 0 0 20px rgba(0,212,255,0.10), inset 0 1px 0 rgba(255,255,255,0.04);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
   }
 
-  .lic-wrap { 
-    background: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(0,212,255,0.06) 0%, transparent 70%), transparent; 
+  .panel-wrap, .webhook-wrap {
+    background: rgba(8,11,15,0.80);
+    border: 1px solid rgba(0,212,255,0.20);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
   }
 
-  /* ====================== ORIGINAL STYLES (HINDI BINAGO) ====================== */
-  ::-webkit-scrollbar { width: 4px; } 
-  ::-webkit-scrollbar-track { background: transparent; } 
+  .lic-wrap {
+    background: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(0,212,255,0.06) 0%, transparent 70%), transparent;
+  }
+
+  /* ====================== SCROLLBAR ====================== */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
 
+  /* ====================== LICENSE SCREEN ====================== */
+  .lic-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
   .lic-card { width: 100%; max-width: 480px; border-radius: var(--radius-lg); padding: 36px 28px 28px; position: relative; overflow: hidden; }
   .lic-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--cyan), transparent); }
-  .lic-logo { font-family: var(--sans); font-size: 36px; font-weight: 800; color: var(--cyan); letter-spacing: 6px; margin-bottom: 4px; }
+  .lic-logo { font-family: var(--sans); font-size: 36px; font-weight: 800; color: var(--cyan); letter-spacing: 6px; margin-bottom: 4px; text-shadow: 0 0 20px rgba(0,212,255,0.4); }
   .lic-sub { font-size: 10px; letter-spacing: 3px; color: var(--muted); margin-bottom: 32px; }
   .lic-label { font-size: 10px; letter-spacing: 2px; color: var(--muted); margin-bottom: 8px; display: block; }
-  .lic-input { width: 100%; padding: 13px 16px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--cyan); font-family: var(--mono); font-size: 13px; letter-spacing: 2px; outline: none; transition: border-color .2s, box-shadow .2s; margin-bottom: 12px; }
+  .lic-input { width: 100%; padding: 13px 16px; background: rgba(8,11,15,0.85); border: 1px solid var(--border); border-radius: var(--radius); color: var(--cyan); font-family: var(--mono); font-size: 13px; letter-spacing: 2px; outline: none; transition: border-color .2s, box-shadow .2s; margin-bottom: 12px; }
   .lic-input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px var(--cyan-dim); }
   .lic-input::placeholder { color: var(--muted2); letter-spacing: 1px; }
   .lic-btn { width: 100%; padding: 13px; background: var(--cyan); border: none; border-radius: var(--radius); color: var(--bg); font-family: var(--sans); font-weight: 700; font-size: 13px; letter-spacing: 3px; text-transform: uppercase; cursor: pointer; transition: all .2s; }
   .lic-btn:hover { background: #33dbff; transform: translateY(-1px); box-shadow: 0 8px 24px var(--cyan-glow); }
   .lic-btn.loading { opacity: .7; pointer-events: none; }
   .lic-err { font-size: 11px; min-height: 18px; margin-top: 10px; text-align: center; letter-spacing: .5px; color: var(--red); }
+
+  /* ====================== PRICING ====================== */
   .price-section { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
   .price-title { font-size: 9px; letter-spacing: 3px; color: var(--muted); margin-bottom: 12px; text-align: center; }
   .price-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; min-width: 0; }
-  .price-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 6px; text-align: center; transition: border-color .2s; min-width: 0; overflow: hidden; }
+  .price-card { background: rgba(8,11,15,0.75); border: 1px solid var(--border); border-radius: 8px; padding: 12px 6px; text-align: center; transition: border-color .2s; min-width: 0; overflow: hidden; }
   .price-card:hover { border-color: var(--border2); }
   .price-card.featured { border-color: rgba(0,212,255,.3); background: var(--cyan-dim); }
   .price-name { font-family: var(--sans); font-size: 10px; font-weight: 700; color: var(--text); letter-spacing: 1px; margin-bottom: 4px; }
@@ -1365,6 +1377,8 @@ HTML = r"""<!DOCTYPE html>
   .price-dur { font-size: 8px; color: var(--muted); letter-spacing: 1px; margin-top: 2px; }
   .price-php { font-size: 9px; color: var(--muted); letter-spacing: 1px; margin-top: 2px; }
   .price-card.featured .price-amt { color: var(--green); }
+
+  /* ====================== DISCORD ====================== */
   .discord-section { text-align: center; }
   .discord-label { font-size: 10px; color: var(--muted); letter-spacing: 1.5px; margin-bottom: 10px; }
   .discord-btn { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 11px 22px; background: rgba(114,137,218,.1); border: 1px solid rgba(114,137,218,.4); border-radius: 8px; color: var(--purple); font-family: var(--mono); font-size: 12px; letter-spacing: 1px; text-decoration: none; transition: all .2s; width: 100%; }
@@ -1373,49 +1387,61 @@ HTML = r"""<!DOCTYPE html>
   .lic-footer { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
   .lic-dot { width: 6px; height: 6px; background: var(--muted2); border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; transition: background .3s; }
   .lic-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse-dot 1.4s infinite; }
+
+  /* ====================== MAIN APP ====================== */
   .app { min-height: 100vh; max-width: 580px; margin: 0 auto; padding: 20px 16px 40px; display: flex; flex-direction: column; gap: 12px; }
   .hdr { display: flex; align-items: center; gap: 12px; padding: 16px 0 12px; border-bottom: 1px solid var(--border); }
-  .hdr-logo { font-family: var(--sans); font-size: 22px; font-weight: 800; color: var(--cyan); letter-spacing: 4px; }
+  .hdr-logo { font-family: var(--sans); font-size: 22px; font-weight: 800; color: var(--cyan); letter-spacing: 4px; text-shadow: 0 0 16px rgba(0,212,255,0.35); }
   .hdr-sub { font-size: 10px; color: var(--muted); letter-spacing: 2px; }
   .hdr-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
   .hdr-ver { font-size: 10px; color: var(--muted2); background: var(--surface2); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); }
   .plan-badge { font-size: 9px; letter-spacing: 1px; color: var(--gold); background: rgba(245,200,66,.08); border: 1px solid rgba(245,200,66,.3); border-radius: 20px; padding: 3px 10px; }
+
+  /* ====================== STATUS ====================== */
   .status-bar { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); padding: 6px 0; }
   .status-bar .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted2); flex-shrink: 0; }
   .status-bar.running .dot { background: var(--gold); box-shadow: 0 0 6px var(--gold); animation: pulse-dot 1s infinite; }
   .status-bar.done .dot { background: var(--green); }
   .status-bar.stopped .dot, .status-bar.limit .dot { background: var(--red); }
   .status-text { color: var(--text); }
+
+  /* ====================== STATS ====================== */
   .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 8px 10px; text-align: center; position: relative; overflow: hidden; }
+  .stat { border-radius: var(--radius); padding: 14px 8px 10px; text-align: center; position: relative; overflow: hidden; }
   .stat::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px; border-radius: 0 0 var(--radius) var(--radius); opacity: .6; }
-  .stat.s-created::after { background: var(--green); } 
-  .stat.s-active::after { background: var(--cyan); } 
-  .stat.s-failed::after { background: var(--red); } 
-  .stat.s-target::after { background: var(--gold); }
+  .stat.s-created::after { background: var(--green); }
+  .stat.s-active::after  { background: var(--cyan); }
+  .stat.s-failed::after  { background: var(--red); }
+  .stat.s-target::after  { background: var(--gold); }
   .stat-val { font-family: var(--sans); font-size: 26px; font-weight: 800; display: block; line-height: 1; }
   .stat-lbl { font-size: 8px; color: var(--muted); letter-spacing: 2px; margin-top: 5px; display: block; }
-  .s-created .stat-val { color: var(--green); } 
-  .s-active .stat-val { color: var(--cyan); } 
-  .s-failed .stat-val { color: var(--red); } 
-  .s-target .stat-val { color: var(--gold); }
-  .limit-bar-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; }
+  .s-created .stat-val { color: var(--green); }
+  .s-active .stat-val  { color: var(--cyan); }
+  .s-failed .stat-val  { color: var(--red); }
+  .s-target .stat-val  { color: var(--gold); }
+
+  /* ====================== LIMIT BAR ====================== */
+  .limit-bar-wrap { border-radius: var(--radius); padding: 12px 16px; }
   .limit-bar-top { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-bottom: 8px; letter-spacing: 1px; }
   .limit-bar-top span:last-child { color: var(--text); }
   .limit-bar-track { height: 4px; background: var(--border); border-radius: 4px; overflow: hidden; }
   .limit-bar-fill { height: 100%; background: var(--cyan); border-radius: 4px; transition: width .4s ease; }
-  .limit-bar-fill.warn { background: var(--gold); } 
+  .limit-bar-fill.warn   { background: var(--gold); }
   .limit-bar-fill.danger { background: var(--red); }
-  .config-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+  /* ====================== CONFIG CARD ====================== */
+  .config-card { border-radius: var(--radius); overflow: hidden; }
   .config-card-hdr { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 10px; letter-spacing: 2px; color: var(--muted); cursor: pointer; user-select: none; transition: background .15s; }
   .config-card-hdr:hover { background: var(--surface2); }
   .config-card-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
   .config-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   .config-field { display: flex; align-items: center; gap: 10px; }
   .config-label { font-size: 10px; letter-spacing: 2px; color: var(--muted); white-space: nowrap; }
-  .config-input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--cyan); font-family: var(--mono); font-size: 13px; padding: 6px 10px; width: 72px; outline: none; transition: border-color .2s, box-shadow .2s; }
+  .config-input { background: rgba(8,11,15,0.85); border: 1px solid var(--border); border-radius: 6px; color: var(--cyan); font-family: var(--mono); font-size: 13px; padding: 6px 10px; width: 72px; outline: none; transition: border-color .2s, box-shadow .2s; }
   .config-input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px var(--cyan-dim); }
-  .panel-wrap { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+
+  /* ====================== PANEL ====================== */
+  .panel-wrap { border-radius: 6px; overflow: hidden; }
   .panel-label { font-size: 10px; letter-spacing: 2px; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; }
   .panel-label:hover { color: var(--text); }
   .panel-label .badge { font-size: 9px; color: var(--muted2); }
@@ -1428,7 +1454,9 @@ HTML = r"""<!DOCTYPE html>
   .panel-btn { padding: 5px 14px; background: transparent; border: 1px solid var(--cyan); border-radius: 5px; color: var(--cyan); font-family: var(--sans); font-weight: 700; font-size: 9px; letter-spacing: 2px; cursor: pointer; transition: all .15s; }
   .panel-btn:hover { background: var(--cyan); color: var(--bg); }
   .panel-status { font-size: 10px; color: var(--muted); letter-spacing: 1px; margin-left: auto; transition: color .2s; }
-  .webhook-wrap { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; transition: border-color .3s; }
+
+  /* ====================== WEBHOOK ====================== */
+  .webhook-wrap { border-radius: 6px; overflow: hidden; transition: border-color .3s; }
   .webhook-wrap.required { border-color: rgba(255,59,92,.5); box-shadow: 0 0 0 1px rgba(255,59,92,.2); }
   .webhook-row { display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--border); }
   .webhook-lbl { font-size: 10px; letter-spacing: 2px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
@@ -1437,45 +1465,59 @@ HTML = r"""<!DOCTYPE html>
   .webhook-input::placeholder { color: var(--muted2); }
   .webhook-req-note { font-size: 9px; padding: 4px 12px 2px; color: var(--red); letter-spacing: 1px; display: none; }
   .webhook-wrap.required .webhook-req-note { display: block; }
-  .tutorial-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+  /* ====================== TUTORIAL ====================== */
+  .tutorial-card { border-radius: var(--radius); overflow: hidden; }
   .tutorial-hdr { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 10px; letter-spacing: 2px; color: var(--muted); display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; transition: background .15s; }
   .tutorial-hdr:hover { background: var(--surface2); }
   .tutorial-hdr svg { flex-shrink: 0; opacity: .6; }
   .tutorial-body { display: none; padding: 16px; }
   .tutorial-body.open { display: block; }
-  .video-container { position: relative; width: 100%; padding-top: 56.25%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
+  .video-container { position: relative; width: 100%; padding-top: 56.25%; background: rgba(8,11,15,0.85); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
   .video-el { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* ====================== RUN BUTTON ====================== */
   .run-btn { width: 100%; padding: 15px; border: none; border-radius: var(--radius); font-family: var(--sans); font-weight: 700; font-size: 13px; letter-spacing: 3px; text-transform: uppercase; cursor: pointer; transition: all .2s; }
   .run-btn.idle { background: transparent; border: 1px solid var(--cyan); color: var(--cyan); }
   .run-btn.idle:hover { background: var(--cyan); color: var(--bg); box-shadow: 0 6px 24px var(--cyan-glow); transform: translateY(-1px); }
   .run-btn.stop { background: transparent; border: 1px solid var(--red); color: var(--red); }
   .run-btn.stop:hover { background: rgba(255,59,92,.08); }
   .run-btn.disabled-btn { opacity: .4; pointer-events: none; border: 1px solid var(--muted); color: var(--muted); background: transparent; }
+
+  /* ====================== BANNERS ====================== */
   .warn-banner { background: rgba(245,200,66,.08); border: 1px solid rgba(245,200,66,.35); border-radius: var(--radius); padding: 12px 16px; font-size: 11px; color: var(--gold); letter-spacing: .3px; display: none; align-items: flex-start; gap: 10px; line-height: 1.5; }
   .warn-banner.show { display: flex; animation: fadeIn .2s ease; }
   .warn-banner .warn-icon { font-size: 14px; flex-shrink: 0; line-height: 1; margin-top: 1px; }
   .warn-banner strong { color: #fff; }
   .limit-banner { background: rgba(255,59,92,.08); border: 1px solid rgba(255,59,92,.3); border-radius: var(--radius); padding: 12px 16px; font-size: 11px; color: var(--red); letter-spacing: .5px; display: none; align-items: center; gap: 10px; }
   .limit-banner.show { display: flex; }
-  .log-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+  /* ====================== LOG ====================== */
+  .log-wrap { border-radius: var(--radius); overflow: hidden; }
   .log-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 10px; letter-spacing: 2px; color: var(--muted); }
   .log-clear { font-size: 10px; color: var(--muted2); background: none; border: none; cursor: pointer; font-family: var(--mono); padding: 2px 6px; border-radius: 4px; transition: color .2s, background .2s; }
   .log-clear:hover { color: var(--text); background: var(--surface2); }
   .log-box { padding: 10px 14px; height: 220px; overflow-y: auto; font-size: 11px; line-height: 1.8; }
   .log-line { display: flex; gap: 8px; }
   .log-ts { color: var(--muted2); flex-shrink: 0; }
-  .ok .log-msg { color: var(--green); } 
-  .err .log-msg { color: var(--red); } 
-  .dim .log-msg { color: var(--muted); } 
+  .ok  .log-msg { color: var(--green); }
+  .err .log-msg { color: var(--red); }
+  .dim .log-msg { color: var(--muted); }
   .inf .log-msg { color: var(--cyan); }
+
+  /* ====================== FOOTER ====================== */
   .footer { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted2); padding-top: 4px; letter-spacing: 1px; }
   .footer a { color: var(--muted2); text-decoration: none; transition: color .2s; }
   .footer a:hover { color: var(--cyan); }
-  @media (max-width: 480px) { 
-    .stats { grid-template-columns: repeat(2, 1fr); } 
-    .lic-card { padding: 32px 20px 24px; } 
-    .price-grid { grid-template-columns: 1fr; } 
+
+  /* ====================== RESPONSIVE ====================== */
+  @media (max-width: 480px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .lic-card { padding: 32px 20px 24px; }
+    .price-grid { grid-template-columns: 1fr; }
   }
+
+  /* ====================== ANIMATIONS ====================== */
   @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
   .animate-in { animation: fadeIn .3s ease forwards; }
@@ -1623,9 +1665,27 @@ function showLicenseScreen() {
         <div class="price-section">
           <div class="price-title">PRICING</div>
           <div class="price-grid">
-            <div class="price-card"><div class="price-name">BASIC</div><div class="price-limit">100 accounts</div><div class="price-amt">$59.99</div><div class="price-php">&asymp; &#8369;3,389</div><div class="price-dur">30 days</div></div>
-            <div class="price-card featured"><div class="price-name">PRO</div><div class="price-limit">500 accounts</div><div class="price-amt">$249.99</div><div class="price-php">&asymp; &#8369;14,124</div><div class="price-dur">30 days</div></div>
-            <div class="price-card"><div class="price-name">UNLIMITED</div><div class="price-limit">no limit</div><div class="price-amt">$399.99</div><div class="price-php">&asymp; &#8369;22,599</div><div class="price-dur">60 days</div></div>
+            <div class="price-card">
+              <div class="price-name">BASIC</div>
+              <div class="price-limit">100 accounts</div>
+              <div class="price-amt">$59.99</div>
+              <div class="price-php">&asymp; &#8369;3,389</div>
+              <div class="price-dur">30 days</div>
+            </div>
+            <div class="price-card featured">
+              <div class="price-name">PRO</div>
+              <div class="price-limit">500 accounts</div>
+              <div class="price-amt">$249.99</div>
+              <div class="price-php">&asymp; &#8369;14,124</div>
+              <div class="price-dur">30 days</div>
+            </div>
+            <div class="price-card">
+              <div class="price-name">UNLIMITED</div>
+              <div class="price-limit">no limit</div>
+              <div class="price-amt">$399.99</div>
+              <div class="price-php">&asymp; &#8369;22,599</div>
+              <div class="price-dur">60 days</div>
+            </div>
           </div>
           <div class="discord-section">
             <div class="discord-label">join our server to purchase</div>
@@ -1636,7 +1696,10 @@ function showLicenseScreen() {
           </div>
         </div>
 
-        <div class="lic-footer"><span><span class="lic-dot" id="connDot"></span>kuni tool</span><span>v2.6</span></div>
+        <div class="lic-footer">
+          <span><span class="lic-dot" id="connDot"></span>kuni tool</span>
+          <span>v2.6</span>
+        </div>
       </div>
     </div>`;
   document.getElementById('licInput').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
@@ -1717,7 +1780,10 @@ function showMainApp() {
       <div class="limit-banner" id="limitBanner">Account limit reached - contact Kuni to upgrade your plan.</div>
 
       <div class="config-card">
-        <div class="config-card-hdr" onclick="toggleConfig()"><span>CONFIG</span><span id="cfgToggle" style="font-size:9px;letter-spacing:2px">HIDE</span></div>
+        <div class="config-card-hdr" onclick="toggleConfig()">
+          <span>CONFIG</span>
+          <span id="cfgToggle" style="font-size:9px;letter-spacing:2px">HIDE</span>
+        </div>
         <div class="config-card-body" id="cfgBody">
           <div class="config-row">
             <div class="config-field"><span class="config-label">COUNT</span><input class="config-input" type="number" id="count" value="10" min="1" max="9999"></div>
@@ -1730,7 +1796,10 @@ function showMainApp() {
             </div>
             <div class="panel-inner" id="proxyPanel">
               <textarea class="panel-textarea" id="proxyTA" placeholder="paste proxies here - clears after save&#10;host:port, host:port:user:pass, http://user:pass@host:port"></textarea>
-              <div class="panel-actions"><button class="panel-btn" onclick="saveProxies()">SAVE</button><span class="panel-status" id="proxySt"></span></div>
+              <div class="panel-actions">
+                <button class="panel-btn" onclick="saveProxies()">SAVE</button>
+                <span class="panel-status" id="proxySt"></span>
+              </div>
             </div>
           </div>
 
@@ -1740,7 +1809,10 @@ function showMainApp() {
               <input class="webhook-input" id="webhookInput" type="text" placeholder="https://discord.com/api/webhooks/...">
             </div>
             <div class="webhook-req-note">Required - test ping sent on save to verify the URL works.</div>
-            <div class="panel-actions"><button class="panel-btn" onclick="saveWebhook()">SAVE &amp; TEST</button><span class="panel-status" id="webhookSt"></span></div>
+            <div class="panel-actions">
+              <button class="panel-btn" onclick="saveWebhook()">SAVE &amp; TEST</button>
+              <span class="panel-status" id="webhookSt"></span>
+            </div>
           </div>
         </div>
       </div>
