@@ -26,7 +26,7 @@ NO_PROXY      = {"http": None, "https": None}
 
 # ── fake.legal config ──────────────────────────────────────────────────────────
 FAKELEGAL_BASE    = "https://fake.legal/api"
-FAKELEGAL_DOMAINS = ["fake.legal", "imgui.de", "pulsewebmenu.de", "gooncraft.de"]
+FAKELEGAL_DOMAINS = ["fake.legal"]
 
 USER_DATA_DIR = Path(__file__).parent / "user_data"
 USER_DATA_DIR.mkdir(exist_ok=True)
