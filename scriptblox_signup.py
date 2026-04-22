@@ -24,8 +24,9 @@ SB_LOGIN      = "https://scriptblox.com/api/auth/login"
 SB_HOME       = "https://scriptblox.com/"
 NO_PROXY      = {"http": None, "https": None}
 
-TOMY_BASE     = "https://tomy634.com"
-TOMY_API_KEY  = os.environ.get("TOMY_API_KEY", "YOUR_PUBLIC_KEY")
+# ── fake.legal config ──────────────────────────────────────────────────────────
+FAKELEGAL_BASE    = "https://fake.legal/api"
+FAKELEGAL_DOMAINS = ["fake.legal", "imgui.de", "pulsewebmenu.de", "gooncraft.de"]
 
 USER_DATA_DIR = Path(__file__).parent / "user_data"
 USER_DATA_DIR.mkdir(exist_ok=True)
@@ -164,10 +165,6 @@ def is_datacenter_ip(ip):
         if ip.startswith(prefix): return True
     return False
 
-def combined_fingerprint(hwid, ip, ls_token, ua_hash_val, extra_fp=""):
-    ip_pref = ip_subnet(ip, 3) if "." in ip else ip[:8]
-    return hashlib.sha256(f"{hwid}|{ip_pref}|{ls_token or ''}|{ua_hash_val}|{extra_fp or ''}".encode()).hexdigest()
-
 def mask_email(email):
     if not email or "@" not in email: return "***"
     user = email.split("@")[0]
@@ -208,64 +205,75 @@ def atomic_increment_used(key, limit):
                 time.sleep(0.1)
         return (None, False)
 
-# ── tomy634.com Temp Mail API ──────────────────────────────────────────────────
-def tomy_create_box():
+# ── fake.legal Temp Mail API ───────────────────────────────────────────────────
+def fakelegal_create_inbox():
+    """Create a new inbox using fake.legal API. Returns (address, address) or (None, None)."""
     try:
-        r = requests.post(f"{TOMY_BASE}/api/v1/boxes",
-                          params={"api_key": TOMY_API_KEY},
-                          json={"ttl_days": 1, "max_messages": 5},
-                          proxies=NO_PROXY, timeout=15)
+        domain = random.choice(FAKELEGAL_DOMAINS)
+        r = requests.get(f"{FAKELEGAL_BASE}/inbox/new",
+                         params={"domain": domain},
+                         proxies=NO_PROXY, timeout=15)
+        print(f"[fakelegal create] status={r.status_code} body={r.text[:200]}")
         if r.status_code == 200:
             data = r.json()
-            print(f"[tomy] box created: {data.get('email')} box_id={data.get('box_id')}")
-            return data.get("box_id"), data.get("email")
+            if data.get("success") and data.get("address"):
+                address = data["address"]
+                print(f"[fakelegal] inbox created: {address}")
+                # address is used as both the "box_id" and email
+                return address, address
     except Exception as e:
-        print(f"[tomy create] error: {e}")
+        print(f"[fakelegal create] error: {e}")
     return None, None
 
-def tomy_poll_code(box_id, timeout=150, poll_interval=3):
+def fakelegal_poll_code(email_address, timeout=150, poll_interval=3):
+    """Poll fake.legal inbox for ScriptBlox verification code."""
     deadline = time.time() + timeout
     poll_count = 0
     time.sleep(3)
     while time.time() < deadline:
         poll_count += 1
         try:
-            r = requests.get(f"{TOMY_BASE}/api/v1/boxes/{box_id}/messages",
-                             params={"api_key": TOMY_API_KEY, "limit": 20},
+            r = requests.get(f"{FAKELEGAL_BASE}/inbox/{email_address}",
                              proxies=NO_PROXY, timeout=15)
             data = r.json() if r.content else {}
-            messages = data.get("messages") or []
+            emails = data.get("emails") or []
             if poll_count % 5 == 1:
-                print(f"[tomy poll #{poll_count}] msg_count={len(messages)}")
-            for msg in messages:
+                print(f"[fakelegal poll #{poll_count}] msg_count={len(emails)}")
+            for msg in emails:
                 if not isinstance(msg, dict): continue
                 sender  = str(msg.get("from") or "").lower()
                 subject = str(msg.get("subject") or "").lower()
                 if not ("scriptblox" in sender or "scriptblox" in subject or "verification" in subject):
                     continue
-                blob = str(msg.get("snippet") or "") + " " + subject
+                # Try snippet / subject first
+                blob = str(msg.get("subject") or "")
                 match = re.search(r"(?<!\d)(\d{7})(?!\d)", blob)
                 if match:
-                    print(f"[tomy FOUND snippet] code={match.group(1)}")
+                    print(f"[fakelegal FOUND subject] code={match.group(1)}")
                     return match.group(1)
+                # Fetch full email body
                 msg_id = msg.get("id")
                 if msg_id:
                     try:
-                        dr = requests.get(f"{TOMY_BASE}/api/v1/messages/{msg_id}",
-                                          params={"api_key": TOMY_API_KEY},
+                        dr = requests.get(f"{FAKELEGAL_BASE}/email/{msg_id}",
                                           proxies=NO_PROXY, timeout=15)
                         detail = dr.json() if dr.content else {}
-                        full_blob = " ".join([str(detail.get("body_text") or ""), str(detail.get("subject") or ""), str(detail.get("snippet") or "")])
+                        email_data = detail.get("email") or {}
+                        full_blob = " ".join([
+                            str(email_data.get("text") or ""),
+                            str(email_data.get("html") or ""),
+                            str(email_data.get("subject") or ""),
+                        ])
                         m = re.search(r"(?<!\d)(\d{7})(?!\d)", full_blob)
                         if m:
-                            print(f"[tomy FOUND detail] code={m.group(1)}")
+                            print(f"[fakelegal FOUND detail] code={m.group(1)}")
                             return m.group(1)
                     except Exception as e:
-                        print(f"[tomy detail] error: {e}")
+                        print(f"[fakelegal detail] error: {e}")
         except Exception as e:
-            print(f"[tomy poll #{poll_count}] error: {e}")
+            print(f"[fakelegal poll #{poll_count}] error: {e}")
         time.sleep(poll_interval)
-    print(f"[tomy] TIMEOUT after {poll_count} polls")
+    print(f"[fakelegal] TIMEOUT after {poll_count} polls")
     return None
 
 # ── ScriptBlox ────────────────────────────────────────────────────────────────
@@ -498,7 +506,8 @@ def create_account(sess_token, slot):
 
     log_emit(sess_token, f"[#{slot}] creating email + solving captcha...", "dim")
 
-    box_id, email_addr = tomy_create_box()
+    # Use fake.legal instead of tomy634
+    email_addr, _ = fakelegal_create_inbox()
     captcha = solve_turnstile_capsolver()
 
     if not email_addr or not captcha:
@@ -506,7 +515,7 @@ def create_account(sess_token, slot):
         log_emit(sess_token, f"[#{slot}] x setup failed ({'email' if not email_addr else 'captcha'})", "err")
         return
 
-    print(f"[#{slot}] email={email_addr} box_id={box_id}")
+    print(f"[#{slot}] email={email_addr}")
     log_emit(sess_token, f"[#{slot}] submitting signup...", "dim")
 
     signup_token = ""
@@ -557,7 +566,7 @@ def create_account(sess_token, slot):
     except: pass
 
     log_emit(sess_token, f"[#{slot}] waiting for verification email...", "dim")
-    verify_code = tomy_poll_code(box_id, timeout=150)
+    verify_code = fakelegal_poll_code(email_addr, timeout=150)
     verified    = False
     final_token = signup_token
 
