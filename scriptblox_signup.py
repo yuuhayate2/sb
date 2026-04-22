@@ -418,7 +418,7 @@ def test_webhook(url):
         return r.status_code in (200, 204)
     except: return False
 
-def rand_username(): return "Kuni" + "".join(random.choices(string.ascii_letters + string.digits, k=10))
+def rand_username(): return "kwinzi" + "".join(random.choices(string.ascii_letters + string.digits, k=10))
 def rand_password():  return "".join(random.choices(string.ascii_letters + string.digits + "!@#$", k=14))
 
 def proxy_to_requests(proxy):
